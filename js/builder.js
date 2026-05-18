@@ -6,15 +6,16 @@ const BODY_SIZE_MM = 54.14;
 const SLUG_HEIGHT = 20.56;
 const RELIEF_HEIGHT = 3.00;
 
-export async function buildBlock(glyphIndex, category, glyphsList, axesValues, mirror, applyDraft) {
+export async function buildBlock(glyphIndex, category, glyphsList, axesValues, mirror, applyDraft, variableSize = true) {
   const activeFont = getActiveFont(axesValues);
   if (!activeFont) return null;
 
-  const BEARD_UNITS = (24 / 1000) * activeFont.unitsPerEm;
+  const BEARD_UNITS = 0.022 * activeFont.unitsPerEm; // 2.2% of EM square
   const u2mm = BODY_SIZE_MM / activeFont.unitsPerEm;
   const beard = BEARD_UNITS * u2mm;
 
   let blockMinX, blockMaxX, blockMinY, blockMaxY;
+  let bY1 = 0, bY2 = 0;
   let activeGlyph = null;
 
   if (category === 'Spacing Quads') {
@@ -22,8 +23,10 @@ export async function buildBlock(glyphIndex, category, glyphsList, axesValues, m
     const widthUnits = activeFont.unitsPerEm * quad.fraction;
     blockMinX = 0;
     blockMaxX = widthUnits * u2mm;
-    blockMinY = activeFont.descender * u2mm - beard;
-    blockMaxY = activeFont.ascender * u2mm + beard;
+    bY1 = activeFont.descender;
+    bY2 = activeFont.ascender;
+    blockMinY = bY1 * u2mm - beard;
+    blockMaxY = bY2 * u2mm + beard;
   } else {
     activeGlyph = glyphsList[glyphIndex];
     
@@ -35,20 +38,26 @@ export async function buildBlock(glyphIndex, category, glyphsList, axesValues, m
     const os2 = activeFont.tables.os2;
     const capHeight = os2 && os2.sCapHeight ? os2.sCapHeight : activeFont.ascender;
     const xHeight = os2 && os2.sxHeight ? os2.sxHeight : activeFont.unitsPerEm / 2;
-    
-    let bY1 = 0;
-    let bY2 = capHeight;
-    
-    if (category === 'Uppercase' || category === 'Figures') {
+    const gMinY = activeGlyph.yMin || 0;
+    const gMaxY = activeGlyph.yMax || 0;
+
+    const THRESHOLD = 0.02 * activeFont.unitsPerEm; // 2% mathematical detection limit
+
+    if (gMinY < -THRESHOLD) {
+      bY1 = activeFont.descender;
+    } else {
       bY1 = 0;
-      bY2 = capHeight;
-    } else if (category === 'Lowercase') {
-      bY1 = activeFont.descender;
-      bY2 = activeFont.ascender; 
-    } else if (category === 'Punctuation') {
-      bY1 = activeFont.descender;
+    }
+
+    if (gMaxY > capHeight + THRESHOLD) {
+      bY2 = activeFont.ascender;
+    } else if (gMaxY > xHeight + THRESHOLD) {
       bY2 = capHeight;
     } else {
+      bY2 = xHeight;
+    }
+
+    if (!variableSize) {
       bY1 = activeFont.descender;
       bY2 = activeFont.ascender;
     }
@@ -67,7 +76,7 @@ export async function buildBlock(glyphIndex, category, glyphsList, axesValues, m
   slugMesh.updateMatrix();
   let slugCSG = CSG.fromMesh(slugMesh);
 
-  const chamf = 1.0;
+  const chamf = beard;
   const makeChamfer = (w, h, d, x, y, z, rotX, rotY) => {
     const c = new THREE.Mesh(new THREE.BoxGeometry(w, h, d));
     c.rotation.set(rotX, rotY, 0);
@@ -111,10 +120,13 @@ export async function buildBlock(glyphIndex, category, glyphsList, axesValues, m
   nick.updateMatrix();
   slugCSG = slugCSG.subtract(CSG.fromMesh(nick));
 
-  const blNick = new THREE.Mesh(new THREE.BoxGeometry(blockWidth + 2, 1.0, 1.0));
-  blNick.position.set(blockMinX + blockWidth / 2, 0, 0.5);
-  blNick.updateMatrix();
-  slugCSG = slugCSG.subtract(CSG.fromMesh(blNick));
+  if (!(variableSize && bY1 === 0)) {
+    const blNick = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, blockWidth + 2, 16));
+    blNick.rotation.z = Math.PI / 2;
+    blNick.position.set(blockMinX + blockWidth / 2, 0, 0);
+    blNick.updateMatrix();
+    slugCSG = slugCSG.subtract(CSG.fromMesh(blNick));
+  }
 
   const finalSlug = CSG.toMesh(slugCSG, new THREE.Matrix4());
   const mat = new THREE.MeshStandardMaterial({

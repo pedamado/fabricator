@@ -24,6 +24,7 @@ const loading = document.getElementById('loading');
 const emptyState = document.getElementById('empty-state');
 const mirrorCheck = document.getElementById('mirror-x');
 const draftCheck = document.getElementById('draft-check');
+const variableSizeCheck = document.getElementById('variable-size');
 const plateSel = document.getElementById('plate-select');
 const btnSTL = document.getElementById('btn-export-stl');
 const btnOBJ = document.getElementById('btn-export-obj');
@@ -104,6 +105,7 @@ export function initUI() {
 
   mirrorCheck.addEventListener('change', generate3D);
   draftCheck.addEventListener('change', generate3D);
+  variableSizeCheck.addEventListener('change', generate3D);
 
   btnSTL.addEventListener('click', () => {
     const group = getMeshGroup();
@@ -341,9 +343,10 @@ async function perform3DGeneration() {
 
       const mirror = mirrorCheck.checked;
       const applyDraft = draftCheck.checked;
+      const variableSize = variableSizeCheck.checked;
 
       for (let idx of activeGlyphIndices) {
-        const blockData = await buildBlock(idx, activeCategory === 'spacing_quads' ? 'Spacing Quads' : activeCategory, glyphsList, axesValues, mirror, applyDraft);
+        const blockData = await buildBlock(idx, activeCategory === 'spacing_quads' ? 'Spacing Quads' : activeCategory, glyphsList, axesValues, mirror, applyDraft, variableSize);
         if (!blockData) continue;
 
         const { group, w, h, minX, minY, maxY } = blockData;
@@ -386,6 +389,7 @@ async function handleZipExport() {
 
   const mirror = mirrorCheck.checked;
   const applyDraft = draftCheck.checked;
+  const variableSize = variableSizeCheck.checked;
 
   try {
     const { blob, folderName } = await exportZIP(
@@ -394,6 +398,7 @@ async function handleZipExport() {
       axesValues,
       mirror,
       applyDraft,
+      variableSize,
       (current, total, name) => {
         if (current) {
           loading.querySelector('span').textContent = `Exporting ${current}/${total}: ${name}...`;
