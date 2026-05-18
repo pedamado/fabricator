@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Computational Letterpress Fabricator</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+
+  <!-- JSZip for batch export, samsa-core loaded globally -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="src/samsa-core.js"></script>
+
+  <!-- Modern Import Map for ES Modules -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+        "three-csg-ts": "https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm",
+        "opentype.js": "https://cdn.jsdelivr.net/npm/opentype.js@1.3.4/+esm"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="sidebar">
+      <div id="sidebar-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+          <h3 class="ante-title">Computational Design Letterpress</h3>
+          <h1>Fabricator</h1>
+          <p class="subtitle">Drop a variable TTF font to begin</p>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" title="Toggle Theme">◐</button>
+      </div>
+
+      <div id="dropzone">
+        <div class="drop-icon">⬇</div>
+        <span>Drop .ttf font file here</span>
+        <small>Supports variable fonts</small>
+      </div>
+
+      <div id="font-info" class="hidden">
+        <div class="info-tag" id="font-name-tag">No font loaded</div>
+      </div>
+      
+      <div id="controls" class="hidden">
+
+        <div class="panel">
+          <h3>Instance</h3>
+          <select id="instance-select"><option value="">Custom</option></select>
+        </div>
+
+        <div class="panel" id="axes-panel">
+          <h3>Axes</h3>
+          <div id="axes-controls"><i>No variable axes</i></div>
+        </div>
+
+        <div class="panel">
+          <h3>Glyph Selection</h3>
+          <select id="filter-select">
+            <option value="all">All Drawn Glyphs</option>
+            <option value="uppercase">Uppercase</option>
+            <option value="lowercase">Lowercase</option>
+            <option value="figures">Figures (0–9)</option>
+            <option value="punctuation">Punctuation</option>
+            <option value="spacing_quads">Spacing Quads</option>
+            <option value="custom">Custom Text Input</option>
+          </select>
+          <input type="text" id="custom-input" class="hidden" placeholder="Type characters…">
+          <div id="selected-count" class="selected-count">0 glyphs selected</div>
+          <div id="glyph-grid"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Plate Size</h3>
+          <select id="plate-select">
+            <option value="">Free Floating (No Plate)</option>
+            <option value="200x200">20 x 20 cm Plate</option>
+            <option value="90x120">9 x 12 cm Plate</option>
+          </select>
+        </div>
+
+        <div class="panel">
+          <h3>Options</h3>
+          <label class="toggle-label" style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="mirror-x" checked> Mirror on X-axis (for printing)
+          </label>
+          <label class="toggle-label" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="draft-check" checked> Apply 12° Slope (Reinforced Neck)
+          </label>
+        </div>
+
+        <div class="panel export-panel">
+          <h3>Export</h3>
+          <button id="btn-export-stl">⬇ STL (Selected Sorts)</button>
+          <button id="btn-export-obj">⬇ OBJ (Selected Sorts)</button>
+          <button id="btn-export-zip" class="btn-secondary">⬇ Export ZIP (All in Set)</button>
+        </div>
+      </div>
+
+      <div id="sidebar-footer">
+        <p class="app-description">
+          This app is meant to streamline the fabrication of custom fonts designed digitally in the Type Design course of the master in Graphic Design and Editorial Projects. Meant to assist students get their designs 3D printed in the school's fablab quickly, or for those with no knowledge of 3D software. Still some hacks needed to make the letters print only the necessary material/size like the wood type. Nevertheless a working prototype to get all the fonts to the same measurements and print seamlessly in the Printmaking Workshop of FBAUP with the letterpress presses and the other letterpress material.
+        </p>
+        <p class="credits">
+          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded By Gemini Pro 3.1, May 2026. More information and Code available at <a href="https://github.com/pedamado/fabricator" target="_blank">Github</a>.
+        </p>
+      </div>
+    </div>
+    
+    <div id="viewport">
+      <div id="loading" class="hidden">
+        <div class="spinner"></div>
+        <span>Generating 3D model…</span>
+      </div>
+      <div id="empty-state">
+        <div class="empty-icon">✦</div>
+        <p>Drop a font to see your 3D letterpress sorts here</p>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Load modular application -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
