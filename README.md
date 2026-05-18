@@ -9,6 +9,9 @@ It is designed to assist students in getting their custom variable fonts 3D prin
 
 *Note:* There are still some hacks needed to make the letters print only the necessary material/size like traditional wood type. Nevertheless, this serves as a working prototype to standardize all custom fonts to the same exact typographic measurements so they can print seamlessly in the Printmaking Workshop of FBAUP using traditional letterpress presses and materials.
 
+<img width="1781" height="876" alt="Screenshot 2026-05-18 at 21 46 27" src="https://github.com/user-attachments/assets/6e79a369-8592-46ba-894b-d9ae2f0595ef" />
+
+
 ## Features
 - **Variable Font Parsing:** Drop any TrueType (`.ttf`) or OpenType (`.otf`) variable font to instantly read axis extremes and glyph metrics directly in your browser.
 - **Parametric Sort Generation:** Automatically extrudes type at 23.56mm typographic height and builds solid physical letterpress slugs/sorts (shoulder at 20.56mm).
