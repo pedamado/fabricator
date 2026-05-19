@@ -2,6 +2,8 @@
 
 **Live Tool:** [http://typedesign.fba.up.pt/letterpress-fabricator/](http://typedesign.fba.up.pt/letterpress-fabricator/)
 
+<img width="1781" height="876" alt="Screenshot 2026-05-18 at 21 46 27" src="https://github.com/user-attachments/assets/a5b13d05-a83c-4486-969d-f5eaf3c57ae1" />
+
 ## Description
 This app is meant to streamline the fabrication of custom fonts designed digitally in the Type Design course of the master in Graphic Design and Editorial Projects. 
 
