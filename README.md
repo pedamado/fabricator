@@ -21,6 +21,6 @@ It is designed to assist students in getting their custom variable fonts 3D prin
 ## Credits & Links
 Designed by Pedro Amado, [FBAUP](https://www.up.pt/fbaup/) / [i2ADS](https://i2ads.up.pt/), within the context of the Type Design course of the [MDGPE](https://mdgpe.fba.up.pt/) master program at FBAUP, and the [Ligatures SIG](https://ligatures.fba.up.pt/) from the i2ADS. 
 
-Coded by Gemini Pro 3.1, Version 7.1, May 2026.
+Coded by Gemini Pro 3.1, and Claude Code Opus 4.7, Version 7.1, May 2026.
 
 More information and code is available at the project's [Github repository](https://github.com/pedamado/fabricator).
