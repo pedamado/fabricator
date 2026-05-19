@@ -242,6 +242,18 @@ input[type=range] {
   color: var(--text-muted);
   margin: 6px 0 4px;
 }
+.glyph-bulk-actions {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0 4px;
+}
+.btn-mini {
+  flex: 1;
+  margin-top: 0 !important;
+  padding: 5px 8px;
+  font-size: 0.72rem;
+  font-weight: 500;
+}
 #glyph-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(30px, 1fr));
@@ -356,6 +368,128 @@ button:active { transform: translateY(0); }
 }
 .empty-icon { font-size: 3rem; margin-bottom: 12px; opacity: 0.3; }
 #empty-state p { font-size: 0.9rem; max-width: 220px; }
+
+/* ─── Advanced Customization Accordion ─── */
+.advanced-panel {
+  padding: 0;
+}
+.advanced-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  user-select: none;
+}
+.advanced-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.advanced-panel > summary:hover {
+  color: var(--accent);
+}
+.advanced-panel .adv-chevron {
+  display: inline-block;
+  transition: transform 0.18s ease;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.advanced-panel[open] > summary .adv-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.advanced-panel[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.adv-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.adv-section:last-of-type {
+  border-bottom: none;
+}
+.adv-section h4 {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 2px;
+}
+.adv-section > select {
+  margin-bottom: 4px;
+}
+
+.adv-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.adv-row label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.adv-val {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
+}
+.adv-total {
+  flex-direction: row;
+  justify-content: space-between;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.adv-dual {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.adv-dual input[type="number"] {
+  flex: 0 0 70px;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-family: var(--font);
+  font-size: 0.82rem;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.adv-dual input[type="number"]::-webkit-outer-spin-button,
+.adv-dual input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.adv-dual input[type="number"]:focus {
+  border-color: var(--accent);
+}
+.adv-unit {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Disabled state for sub-controls when parent toggle is off */
+.adv-section.disabled .adv-row,
+.adv-section.disabled > select {
+  opacity: 0.45;
+  pointer-events: none;
+}
 
 /* ─── Utilities ─── */
 .hidden { display: none !important; }

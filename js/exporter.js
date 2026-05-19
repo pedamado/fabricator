@@ -83,7 +83,7 @@ export function exportOBJFromGroup(group) {
   return obj;
 }
 
-export async function exportZIP(glyphsList, category, axesValues, mirror, applyDraft, onProgress) {
+export async function exportZIP(glyphsList, category, axesValues, mirror, applyDraft, variableSize, slugOptions, onProgress) {
   if (typeof JSZip === 'undefined') {
     throw new Error('JSZip is not loaded.');
   }
@@ -92,18 +92,18 @@ export async function exportZIP(glyphsList, category, axesValues, mirror, applyD
   const folder = zip.folder(folderName);
 
   for (let i = 0; i < glyphsList.length; i++) {
-    const charName = category === 'Spacing Quads' 
-      ? glyphsList[i].name.replace(/\W+/g, '_') 
+    const charName = category === 'Spacing Quads'
+      ? glyphsList[i].name.replace(/\W+/g, '_')
       : (glyphsList[i].name || `glyph_${i}`);
-    
+
     if (onProgress) {
       onProgress(i + 1, glyphsList.length, charName);
     }
-    
+
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-      const blockData = await buildBlock(i, category, glyphsList, axesValues, mirror, applyDraft);
+      const blockData = await buildBlock(i, category, glyphsList, axesValues, mirror, applyDraft, variableSize, slugOptions);
       if (blockData && blockData.group) {
         blockData.group.position.set(0, 0, 0);
         blockData.group.updateMatrixWorld(true);

@@ -73,6 +73,10 @@
           </select>
           <input type="text" id="custom-input" class="hidden" placeholder="Type characters…">
           <div id="selected-count" class="selected-count">0 glyphs selected</div>
+          <div class="glyph-bulk-actions">
+            <button type="button" id="btn-select-all"   class="btn-secondary btn-mini">Select all</button>
+            <button type="button" id="btn-deselect-all" class="btn-secondary btn-mini">Clear</button>
+          </div>
           <div id="glyph-grid"></div>
         </div>
 
@@ -91,12 +95,136 @@
             <input type="checkbox" id="mirror-x" checked> Mirror on X-axis (for printing)
           </label>
           <label class="toggle-label" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
-            <input type="checkbox" id="draft-check" checked> Apply 12° Slope (Reinforced Neck)
+            <input type="checkbox" id="draft-check" checked> Apply Slope (Reinforced Neck)
           </label>
           <label class="toggle-label" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
             <input type="checkbox" id="variable-size" checked> Variable Slug Size (Optimized bounds)
           </label>
         </div>
+
+        <details class="panel advanced-panel" id="advanced-panel">
+          <summary>
+            <span class="adv-title">Advanced Customization</span>
+            <span class="adv-chevron">▸</span>
+          </summary>
+
+          <!-- 1. Font size -->
+          <div class="adv-section">
+            <h4>Font Size (Didot points)</h4>
+            <div class="adv-dual">
+              <input type="number" id="opt-font-size-input" min="10" max="288" step="1" value="144">
+              <span class="adv-unit" id="opt-font-size-mm">54.15mm</span>
+            </div>
+            <input type="range" id="opt-font-size-slider" min="10" max="288" step="1" value="144">
+          </div>
+
+          <!-- 2. Type height -->
+          <div class="adv-section">
+            <h4>Type Height (Slug + Relief)</h4>
+            <select id="opt-slug-height-preset">
+              <option value="20.56">Continental — 20.56mm (0.928 in)</option>
+              <option value="20.32">Anglo-American — 20.32mm (0.918 in)</option>
+              <option value="21.60">Italian — 21.60mm</option>
+              <option value="21.85">Dutch — 21.85mm</option>
+              <option value="custom">Custom</option>
+            </select>
+            <div class="adv-row">
+              <label>Slug height <span class="adv-val" id="opt-slug-height-val">20.56mm</span></label>
+              <input type="range" id="opt-slug-height" min="15" max="25" step="0.01" value="20.56">
+            </div>
+            <div class="adv-row">
+              <label>Relief / Eye depth <span class="adv-val" id="opt-relief-val">3.0mm</span></label>
+              <input type="range" id="opt-relief" min="1" max="3" step="0.1" value="3">
+            </div>
+            <div class="adv-row adv-total">
+              <span>Total type height:</span>
+              <span class="adv-val" id="opt-total-height">23.56mm</span>
+            </div>
+          </div>
+
+          <!-- 3. Hollow -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-hollow" checked> Hollow Core
+            </label>
+            <div class="adv-row">
+              <label>Min slug width to hollow <span class="adv-val" id="opt-hollow-min-val">24mm</span></label>
+              <input type="range" id="opt-hollow-min" min="8" max="32" step="0.5" value="24">
+            </div>
+            <div class="adv-row">
+              <label>Wall thickness <span class="adv-val" id="opt-wall-val">8mm</span></label>
+              <input type="range" id="opt-wall" min="5" max="15" step="0.5" value="8">
+            </div>
+          </div>
+
+          <!-- 4. Drains -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-drain" checked> Drain Escape Hatches
+            </label>
+            <div class="adv-row">
+              <label>Drain diameter <span class="adv-val" id="opt-drain-val">5mm</span></label>
+              <input type="range" id="opt-drain-size" min="0" max="10" step="0.5" value="5">
+            </div>
+          </div>
+
+          <!-- 5. Foot chamfer -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-chamfer" checked> Foot Chamfer
+            </label>
+            <div class="adv-row">
+              <label>Chamfer size <span class="adv-val" id="opt-chamfer-val">1.08mm</span></label>
+              <input type="range" id="opt-chamfer-size" min="0" max="5" step="0.05" value="1.083">
+            </div>
+          </div>
+
+          <!-- 6. Foot nick (ID groove on side of slug) -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-foot-nick" checked> Foot Nick (ID groove)
+            </label>
+            <div class="adv-row">
+              <label>Foot nick radius <span class="adv-val" id="opt-foot-nick-val">2mm</span></label>
+              <input type="range" id="opt-foot-nick-size" min="0" max="5" step="0.1" value="2">
+            </div>
+          </div>
+
+          <!-- 7. Baseline nick -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-bl-nick" checked> Baseline Nick Groove
+            </label>
+            <div class="adv-row">
+              <label>Baseline nick radius <span class="adv-val" id="opt-bl-nick-val">1mm</span></label>
+              <input type="range" id="opt-bl-nick-size" min="0" max="5" step="0.1" value="1">
+            </div>
+          </div>
+
+          <!-- 8. Beard tolerance -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-beard-toggle" checked> Beard Tolerance
+            </label>
+            <div class="adv-row">
+              <label>Beard (% of EM, per side) <span class="adv-val" id="opt-beard-val">2.0%</span></label>
+              <input type="range" id="opt-beard-size" min="0" max="25" step="0.1" value="2">
+            </div>
+          </div>
+
+          <!-- 9. Neck slope -->
+          <div class="adv-section">
+            <label class="toggle-label">
+              <input type="checkbox" id="opt-slope" checked> Neck Slope Angle
+            </label>
+            <div class="adv-row">
+              <label>Slope angle <span class="adv-val" id="opt-slope-val">12°</span></label>
+              <input type="range" id="opt-slope-angle" min="0" max="45" step="1" value="12">
+            </div>
+          </div>
+
+          <button type="button" id="opt-reset" class="btn-secondary" style="margin-top:6px;">↺ Reset Advanced Defaults</button>
+        </details>
 
         <div class="panel export-panel">
           <h3>Export</h3>
@@ -111,7 +239,7 @@
           This app is meant to streamline the fabrication of custom fonts designed digitally in the Type Design course of the master in Graphic Design and Editorial Projects. Meant to assist students get their designs 3D printed in the school's fablab quickly, or for those with no knowledge of 3D software. Still some hacks needed to make the letters print only the necessary material/size like the wood type. Nevertheless a working prototype to get all the fonts to the same measurements and print seamlessly in the Printmaking Workshop of FBAUP with the letterpress presses and the other letterpress material.
         </p>
         <p class="credits">
-          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded By Gemini Pro 3.1, Version 7.1, May 2026. More information and Code available at <a href="https://github.com/pedamado/fabricator" target="_blank">Github</a>.
+          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded By Gemini Pro 3.1, and Claude Code Opus 4.7, Version 8, May 2026. More information and Code available at <a href="https://github.com/pedamado/fabricator" target="_blank">Github</a>.
         </p>
       </div>
     </div>

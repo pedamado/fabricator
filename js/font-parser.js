@@ -1,17 +1,21 @@
 import opentype from 'opentype.js';
+import { SamsaFont, SamsaBuffer } from '../src/samsa-core.js';
 
 let font = null;
 let samsaFont = null;
+let fontBuffer = null;
 
 export async function parseFont(buffer) {
+  fontBuffer = buffer;
   font = opentype.parse(buffer);
   
   samsaFont = null;
   if (typeof SamsaFont !== 'undefined') {
     try {
-      samsaFont = new SamsaFont(new Uint8Array(buffer));
+      samsaFont = new SamsaFont(new SamsaBuffer(buffer));
     } catch (e) {
-      console.warn("SamsaFont parsing warning:", e.message);
+      console.error("SamsaFont parsing error:", e);
+      alert("SamsaFont failed to parse! Error: " + e.message);
     }
   }
   return { font, samsaFont };
@@ -26,8 +30,14 @@ export function getSamsaFont() {
 }
 
 export function getAxes() {
-  if (samsaFont && samsaFont.axes) {
-    return samsaFont.axes;
+  if (samsaFont && typeof samsaFont.axes === 'function') {
+    return samsaFont.axes().map(axis => ({
+      tag: axis.axisTag,
+      name: axis.axisTag,
+      min: axis.minValue,
+      max: axis.maxValue,
+      default: axis.defaultValue
+    }));
   } else if (font && font.tables.fvar) {
     return font.tables.fvar.axes.map(axis => ({
       tag: axis.tag,
@@ -41,17 +51,17 @@ export function getAxes() {
 }
 
 export function getInstances() {
-  if (samsaFont && samsaFont.instances) {
-    return samsaFont.instances.map((inst, index) => {
-      const raw = samsaFont.names && samsaFont.names[inst.nameID];
+  if (samsaFont && typeof samsaFont.instances === 'function') {
+    return samsaFont.instances().map((inst, index) => {
+      const raw = inst.name;
       const name = raw
         ? (typeof raw === 'object' ? (raw['en'] || Object.values(raw)[0] || `Instance ${index + 1}`) : raw)
         : `Instance ${index + 1}`;
       
       // Map tuple indices back to tags
       const coordinates = {};
-      samsaFont.axes.forEach((axis, aIdx) => {
-        coordinates[axis.tag] = inst.tuple[aIdx] !== undefined ? inst.tuple[aIdx] : axis.default;
+      samsaFont.axes().forEach((axis, aIdx) => {
+        coordinates[axis.axisTag] = inst.coordinates[aIdx] !== undefined ? inst.coordinates[aIdx] : axis.defaultValue;
       });
       
       return { name, coordinates };
@@ -71,6 +81,17 @@ export function getInstances() {
 export function getActiveFont(axesValues) {
   if (!font) return null;
   return font.getVariation ? font.getVariation(axesValues) : font;
+}
+
+export function reloadActiveFont(axesValues) {
+  if (!fontBuffer) return null;
+  
+  // Re-parse entirely from scratch to bypass the opentype.js caching issues
+  const freshFont = opentype.parse(fontBuffer);
+  
+  // Apply variations
+  font = freshFont.getVariation ? freshFont.getVariation(axesValues) : freshFont;
+  return font;
 }
 
 export function getGlyphsByCategory(category, axesValues) {
