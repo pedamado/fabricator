@@ -10,7 +10,7 @@ const axesValues = {};
 let isGenerating = false;
 
 // ─── Slug customization options (persisted across the session) ────────────
-const SLUG_OPTIONS_KEY = 'fabricator.slugOptions.v8';
+const SLUG_OPTIONS_KEY = 'fabricator.slugOptions.v8.1';
 const DIDOT_PT_TO_MM = 0.376065;
 
 const DEFAULT_SLUG_OPTIONS = {
@@ -21,6 +21,8 @@ const DEFAULT_SLUG_OPTIONS = {
   hollow: true,
   hollowMinWidth: 24,
   wallThickness: 8,
+  supportWallsEnabled: true,
+  maxCellSpan: 15,
   drainEnabled: true,
   drainSize: 5,
   chamferEnabled: true,
@@ -219,6 +221,9 @@ function initAdvancedPanel() {
   const optHollowMinVal   = document.getElementById('opt-hollow-min-val');
   const optWall           = document.getElementById('opt-wall');
   const optWallVal        = document.getElementById('opt-wall-val');
+  const optSupportWalls   = document.getElementById('opt-support-walls');
+  const optCellSpan       = document.getElementById('opt-cell-span');
+  const optCellSpanVal    = document.getElementById('opt-cell-span-val');
   const optDrain          = document.getElementById('opt-drain');
   const optDrainSize      = document.getElementById('opt-drain-size');
   const optDrainVal       = document.getElementById('opt-drain-val');
@@ -280,6 +285,11 @@ function initAdvancedPanel() {
     optHollowMinVal.textContent = `${slugOptions.hollowMinWidth}mm`;
     optWall.value = slugOptions.wallThickness;
     optWallVal.textContent = `${slugOptions.wallThickness}mm`;
+    if (optSupportWalls) optSupportWalls.checked = slugOptions.supportWallsEnabled;
+    if (optCellSpan) {
+      optCellSpan.value = slugOptions.maxCellSpan;
+      optCellSpanVal.textContent = `${slugOptions.maxCellSpan}mm`;
+    }
     toggleDisabledState(optHollow);
 
     optDrain.checked = slugOptions.drainEnabled;
@@ -388,6 +398,19 @@ function initAdvancedPanel() {
     }
     afterOptionChange();
   });
+  if (optSupportWalls) {
+    optSupportWalls.addEventListener('change', () => {
+      slugOptions.supportWallsEnabled = optSupportWalls.checked;
+      afterOptionChange();
+    });
+  }
+  if (optCellSpan) {
+    optCellSpan.addEventListener('input', () => {
+      slugOptions.maxCellSpan = parseFloat(optCellSpan.value);
+      optCellSpanVal.textContent = `${slugOptions.maxCellSpan}mm`;
+      afterOptionChange();
+    });
+  }
 
   // 4. Drains
   optDrain.addEventListener('change', () => {

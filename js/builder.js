@@ -12,6 +12,12 @@ const DEFAULTS = {
   hollowMinWidth: 24,       // mm
   wallThickness: 8,         // mm
 
+  // Internal support walls inside the hollow cavity.
+  // Triggered when a hollow dimension exceeds 4 × wallThickness; the cavity
+  // is then subdivided into a grid of cells whose span ≤ maxCellSpan.
+  supportWallsEnabled: true,
+  maxCellSpan: 15,          // mm — target maximum cell span in either axis
+
   drainEnabled: true,
   drainSize: 5,             // mm DIAMETER
 
@@ -203,7 +209,15 @@ export async function buildBlock(
     makeChamfer(chamf * 2, blockHeight + 2, chamf * 2, blockMaxX, blockMinY + blockHeight / 2, 0, 0, Math.PI / 4);
   }
 
-  // ─── Hollow core + drain hatches (optional) ─────────────────────────
+  // ─── Hollow core + internal support walls + drain hatches (optional) ───
+  // For large sorts the single rectangular cavity would leave too long an
+  // unsupported span across the top of the letter; SLA prints would sag
+  // and FDM prints would lose adhesion. When a hollow dimension exceeds
+  // 4 × wallThickness we therefore subdivide the cavity into a grid of
+  // smaller cells, each ≤ maxCellSpan wide. Drains are then drilled once
+  // per row (X) and once per column (Y), so every cell has a clear escape
+  // path even though the interior walls now separate it from its
+  // neighbours.
   const wallThick = opts.wallThickness;
   const hollowW = blockWidth  - wallThick * 2;
   const hollowH = blockHeight - wallThick * 2;
@@ -211,24 +225,67 @@ export async function buildBlock(
   const slugWideEnough = Math.min(blockWidth, blockHeight) >= opts.hollowMinWidth;
 
   if (opts.hollow && slugWideEnough && hollowW > 4 && hollowH > 4) {
-    const hollow = new THREE.Mesh(new THREE.BoxGeometry(hollowW, hollowH, hollowD));
-    hollow.position.set(blockMinX + blockWidth / 2, blockMinY + blockHeight / 2, hollowD / 2 - 0.1);
-    hollow.updateMatrix();
-    slugCSG = slugCSG.subtract(CSG.fromMesh(hollow));
+    const supportWalls = opts.supportWallsEnabled !== false;
+    const maxCellSpan  = Math.max(4, opts.maxCellSpan || 15);
+    // Subdivide trigger: hollow span larger than 4 × wallThickness
+    const wallTrigger  = 4 * wallThick;
 
-    // Drains — only when hollow is present
-    if (opts.drainEnabled && opts.drainSize > 0) {
-      const drainR = opts.drainSize / 2;
-      const drainX = new THREE.Mesh(new THREE.CylinderGeometry(drainR, drainR, blockWidth + 2, 16));
-      drainX.rotation.z = Math.PI / 2;
-      drainX.position.set(blockMinX + blockWidth / 2, blockMinY + blockHeight / 2, hollowD / 2);
-      drainX.updateMatrix();
-      slugCSG = slugCSG.subtract(CSG.fromMesh(drainX));
+    // Number of cells along each axis. Solving
+    //   hollowDim = N · cellSpan + (N − 1) · wallThick
+    // for cellSpan = maxCellSpan gives:
+    const cellsX = (supportWalls && hollowW > wallTrigger)
+      ? Math.max(1, Math.ceil((hollowW + wallThick) / (maxCellSpan + wallThick)))
+      : 1;
+    const cellsY = (supportWalls && hollowH > wallTrigger)
+      ? Math.max(1, Math.ceil((hollowH + wallThick) / (maxCellSpan + wallThick)))
+      : 1;
 
-      const drainY = new THREE.Mesh(new THREE.CylinderGeometry(drainR, drainR, blockHeight + 2, 16));
-      drainY.position.set(blockMinX + blockWidth / 2, blockMinY + blockHeight / 2, hollowD / 2);
-      drainY.updateMatrix();
-      slugCSG = slugCSG.subtract(CSG.fromMesh(drainY));
+    const cellW = (hollowW - (cellsX - 1) * wallThick) / cellsX;
+    const cellH = (hollowH - (cellsY - 1) * wallThick) / cellsY;
+
+    if (cellW > 0.1 && cellH > 0.1) {
+      const hollowStartX = blockMinX + wallThick;
+      const hollowStartY = blockMinY + wallThick;
+
+      // Subtract each cell as its own box; the gaps between cells become
+      // the internal vertical/horizontal support walls.
+      for (let cx = 0; cx < cellsX; cx++) {
+        for (let cy = 0; cy < cellsY; cy++) {
+          const x0 = hollowStartX + cx * (cellW + wallThick);
+          const y0 = hollowStartY + cy * (cellH + wallThick);
+          const cellMesh = new THREE.Mesh(new THREE.BoxGeometry(cellW, cellH, hollowD));
+          cellMesh.position.set(x0 + cellW / 2, y0 + cellH / 2, hollowD / 2 - 0.1);
+          cellMesh.updateMatrix();
+          slugCSG = slugCSG.subtract(CSG.fromMesh(cellMesh));
+        }
+      }
+
+      // Drains — one per row (spans full block width) and one per column
+      // (spans full block height). Each tunnel pierces the outer wall and
+      // all interior walls in its lane, giving every cell at least one
+      // X-aligned and one Y-aligned escape path.
+      if (opts.drainEnabled && opts.drainSize > 0) {
+        const drainR = opts.drainSize / 2;
+
+        for (let cy = 0; cy < cellsY; cy++) {
+          const y0 = hollowStartY + cy * (cellH + wallThick);
+          const yCenter = y0 + cellH / 2;
+          const drainX = new THREE.Mesh(new THREE.CylinderGeometry(drainR, drainR, blockWidth + 2, 16));
+          drainX.rotation.z = Math.PI / 2;
+          drainX.position.set(blockMinX + blockWidth / 2, yCenter, hollowD / 2);
+          drainX.updateMatrix();
+          slugCSG = slugCSG.subtract(CSG.fromMesh(drainX));
+        }
+
+        for (let cx = 0; cx < cellsX; cx++) {
+          const x0 = hollowStartX + cx * (cellW + wallThick);
+          const xCenter = x0 + cellW / 2;
+          const drainY = new THREE.Mesh(new THREE.CylinderGeometry(drainR, drainR, blockHeight + 2, 16));
+          drainY.position.set(xCenter, blockMinY + blockHeight / 2, hollowD / 2);
+          drainY.updateMatrix();
+          slugCSG = slugCSG.subtract(CSG.fromMesh(drainY));
+        }
+      }
     }
   }
 
