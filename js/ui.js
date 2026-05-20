@@ -1,5 +1,9 @@
 import { parseFont, getAxes, getInstances, getGlyphsByCategory, getFont } from './font-parser.js';
-import { buildBlock } from './builder.js';
+import { buildBlock, buildSlugFromSource } from './builder.js';
+import {
+  parseSVG, traceBitmap,
+  binarizeImage, traceImage, buildSourceFromSvg,
+} from './sources/index.js';
 import { updatePlate, resetMeshGroup, getMeshGroup, frameGroup, updateBackground } from './scene.js';
 import { exportSTLFromGroup, exportOBJFromGroup, exportZIP } from './exporter.js';
 
@@ -8,6 +12,11 @@ let glyphsList = [];
 const activeGlyphIndices = new Set();
 const axesValues = {};
 let isGenerating = false;
+
+// Active non-font source (vector or bitmap). When set, the font-only panels
+// are hidden and generate3D builds one sort directly from this source
+// instead of looping over glyphsList.
+let activeGraphicSource = null;
 
 // ─── Slug customization options (persisted across the session) ────────────
 const SLUG_OPTIONS_KEY = 'fabricator.slugOptions.v8.1';
@@ -62,6 +71,8 @@ function persistSlugOptions() {
 
 // DOM references
 const dropzone = document.getElementById('dropzone');
+const vectorDropzone = document.getElementById('vector-dropzone');
+const bitmapDropzone = document.getElementById('bitmap-dropzone');
 const controlsPanel = document.getElementById('controls');
 const fontInfo = document.getElementById('font-info');
 const fontNameTag = document.getElementById('font-name-tag');
@@ -140,6 +151,54 @@ export function initUI() {
     input.click();
   });
 
+  // ─── Vector dropzone (.svg today; .pdf/.ai in v9.1) ─────────────────
+  if (vectorDropzone) {
+    vectorDropzone.addEventListener('dragenter', () => vectorDropzone.classList.add('dragover'));
+    vectorDropzone.addEventListener('dragleave', () => vectorDropzone.classList.remove('dragover'));
+    vectorDropzone.addEventListener('dragover',  () => vectorDropzone.classList.add('dragover'));
+    vectorDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      vectorDropzone.classList.remove('dragover');
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!file) return;
+      handleVectorFile(file);
+    });
+    vectorDropzone.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.svg,.pdf,.ai,image/svg+xml,application/pdf';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) handleVectorFile(file);
+      };
+      input.click();
+    });
+  }
+
+  // ─── Bitmap dropzone ────────────────────────────────────────────────
+  if (bitmapDropzone) {
+    bitmapDropzone.addEventListener('dragenter', () => bitmapDropzone.classList.add('dragover'));
+    bitmapDropzone.addEventListener('dragleave', () => bitmapDropzone.classList.remove('dragover'));
+    bitmapDropzone.addEventListener('dragover',  () => bitmapDropzone.classList.add('dragover'));
+    bitmapDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      bitmapDropzone.classList.remove('dragover');
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!file) return;
+      handleBitmapFile(file);
+    });
+    bitmapDropzone.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) handleBitmapFile(file);
+      };
+      input.click();
+    });
+  }
+
   filterSel.addEventListener('change', () => {
     activeCategory = filterSel.value;
     activeGlyphIndices.clear();
@@ -161,26 +220,40 @@ export function initUI() {
 
   btnSTL.addEventListener('click', () => {
     const group = getMeshGroup();
-    if (group && activeGlyphIndices.size > 0) {
-      downloadFile(exportSTLFromGroup(group), 'stl');
+    const hasOutput = activeGraphicSource || activeGlyphIndices.size > 0;
+    if (group && hasOutput) {
+      const baseName = activeGraphicSource
+        ? `letterpress_${activeGraphicSource.name}`
+        : 'letterpress_sorts';
+      downloadFile(exportSTLFromGroup(group), 'stl', baseName);
     }
   });
 
   btnOBJ.addEventListener('click', () => {
     const group = getMeshGroup();
-    if (group && activeGlyphIndices.size > 0) {
-      downloadFile(exportOBJFromGroup(group), 'obj');
+    const hasOutput = activeGraphicSource || activeGlyphIndices.size > 0;
+    if (group && hasOutput) {
+      const baseName = activeGraphicSource
+        ? `letterpress_${activeGraphicSource.name}`
+        : 'letterpress_sorts';
+      downloadFile(exportOBJFromGroup(group), 'obj', baseName);
     }
   });
 
-  btnZIP.addEventListener('click', handleZipExport);
+  btnZIP.addEventListener('click', () => {
+    if (activeGraphicSource) {
+      handleSingleGraphicZip();
+    } else {
+      handleZipExport();
+    }
+  });
 
   // Bulk glyph select / deselect
   const btnSelectAll   = document.getElementById('btn-select-all');
   const btnDeselectAll = document.getElementById('btn-deselect-all');
   if (btnSelectAll) {
     btnSelectAll.addEventListener('click', () => {
-      if (glyphsList.length === 0) return;
+      if (activeGraphicSource || glyphsList.length === 0) return;
       activeGlyphIndices.clear();
       for (let i = 0; i < glyphsList.length; i++) activeGlyphIndices.add(i);
       glyphGrid.querySelectorAll('.glyph-btn').forEach(b => b.classList.add('selected'));
@@ -191,6 +264,7 @@ export function initUI() {
   }
   if (btnDeselectAll) {
     btnDeselectAll.addEventListener('click', () => {
+      if (activeGraphicSource) return;
       if (activeGlyphIndices.size === 0) return;
       activeGlyphIndices.clear();
       glyphGrid.querySelectorAll('.glyph-btn').forEach(b => b.classList.remove('selected'));
@@ -504,14 +578,276 @@ function initAdvancedPanel() {
   pushStateToInputs();
 }
 
+// ─── Graphic-source loaders (vector + bitmap) ──────────────────────────────
+function setActiveGraphicSource(source, dropzoneEl, label) {
+  activeGraphicSource = source;
+  // Clear any prior font selection state — replace-on-drop semantics.
+  activeGlyphIndices.clear();
+  glyphsList = [];
+  // Reflect "loaded" state on the relevant dropzone and reset siblings.
+  [dropzone, vectorDropzone, bitmapDropzone].forEach(dz => {
+    if (!dz) return;
+    if (dz === dropzoneEl) {
+      dz.classList.add('loaded');
+      const span = dz.querySelector('span'); if (span) span.textContent = label;
+      const icon = dz.querySelector('.drop-icon'); if (icon) icon.textContent = '✓';
+    } else {
+      dz.classList.remove('loaded');
+    }
+  });
+  // Reset the font dropzone's label/icon if we just took it over.
+  if (dropzoneEl !== dropzone) {
+    const span = dropzone.querySelector('span'); if (span) span.textContent = 'Drop .ttf font file here';
+    const icon = dropzone.querySelector('.drop-icon'); if (icon) icon.textContent = '⬇';
+  }
+
+  fontNameTag.textContent = `${source.kind === 'bitmap' ? 'Bitmap (traced):' : 'Vector:'} ${source.meta?.originalFilename || source.name}`;
+  fontInfo.classList.remove('hidden');
+  controlsPanel.classList.remove('hidden');
+  emptyState.classList.add('hidden');
+
+  setFontOnlyPanelsVisible(false);
+  resetMeshGroup();
+  generate3D();
+}
+
+function setFontOnlyPanelsVisible(visible) {
+  document.querySelectorAll('.font-only').forEach(el => {
+    el.classList.toggle('hidden', !visible);
+  });
+}
+
+function clearActiveGraphicSource() {
+  activeGraphicSource = null;
+  setFontOnlyPanelsVisible(true);
+  [vectorDropzone, bitmapDropzone].forEach(dz => {
+    if (!dz) return;
+    dz.classList.remove('loaded');
+  });
+}
+
+async function handleVectorFile(file) {
+  const ext = (file.name || '').toLowerCase();
+  if (ext.endsWith('.pdf') || ext.endsWith('.ai')) {
+    alert('PDF / AI support is coming in v9.1. For now, export your artwork as SVG from Illustrator (File → Export → Export As → SVG) and drop it here.');
+    return;
+  }
+  if (!ext.endsWith('.svg') && file.type !== 'image/svg+xml') {
+    alert('Vector dropzone accepts .svg files (and .pdf / .ai in v9.1).');
+    return;
+  }
+  loading.classList.remove('hidden');
+  loading.querySelector('span').textContent = `Parsing ${file.name}…`;
+  try {
+    const text = await readAsText(file);
+    const source = parseSVG(text, stripExt(file.name));
+    source.meta = { ...(source.meta || {}), originalFilename: file.name };
+    setActiveGraphicSource(source, vectorDropzone, file.name);
+  } catch (err) {
+    console.error(err);
+    alert('Could not parse SVG: ' + err.message);
+  } finally {
+    loading.classList.add('hidden');
+  }
+}
+
+async function handleBitmapFile(file) {
+  if (!file.type.startsWith('image/') && !/\.(jpe?g|png|gif|webp|tiff?|heif|heic|bmp)$/i.test(file.name)) {
+    alert('Bitmap dropzone accepts image files (JPG, PNG, TIFF, HEIF, WebP, GIF).');
+    return;
+  }
+  // Open the trace-options modal. The modal owns the binarize→trace→
+  // preview→accept loop and calls back here with the final source.
+  openTraceModal(file);
+}
+
+// ─── Trace-options modal ──────────────────────────────────────────────────
+// One-shot lazy init: hook up controls the first time openTraceModal runs
+// and then keep references in module scope.
+let traceModalState = null;
+
+function openTraceModal(file) {
+  const modal = document.getElementById('trace-modal');
+  if (!modal) {
+    // Fallback to the direct pipeline if the modal markup is missing.
+    return traceBitmap(file, stripExt(file.name))
+      .then(src => setActiveGraphicSource(src, bitmapDropzone, file.name))
+      .catch(err => alert('Could not trace image: ' + err.message));
+  }
+  if (!traceModalState) traceModalState = initTraceModal(modal);
+
+  traceModalState.file = file;
+  traceModalState.threshold = 128;
+  traceModalState.invert = false;
+  traceModalState.pathomit = 4;
+  traceModalState.qtres = 0.5;
+
+  // Sync UI to defaults
+  traceModalState.threshInput.value = 128;
+  traceModalState.threshVal.textContent = '128';
+  traceModalState.pathomitInput.value = 4;
+  traceModalState.pathomitVal.textContent = '4';
+  traceModalState.qtresInput.value = 0.5;
+  traceModalState.qtresVal.textContent = '0.5';
+  traceModalState.invertInput.checked = false;
+  traceModalState.resultBox.innerHTML = '<span class="trace-empty">Tracing…</span>';
+  traceModalState.origBox.innerHTML  = '<span class="trace-empty">Loading…</span>';
+
+  document.getElementById('trace-modal-title').textContent = `Trace Bitmap to Vector — ${file.name}`;
+  modal.classList.remove('hidden');
+  // Kick off the first trace
+  scheduleTraceRefresh(0);
+}
+
+function initTraceModal(modal) {
+  const state = {
+    modal,
+    file: null,
+    threshold: 128,
+    invert: false,
+    pathomit: 4,
+    qtres: 0.5,
+    lastSvg: null,
+    debounceTimer: null,
+    busy: false,
+
+    origBox:        document.getElementById('trace-orig'),
+    resultBox:      document.getElementById('trace-result'),
+    threshInput:    document.getElementById('trace-thresh'),
+    threshVal:      document.getElementById('trace-thresh-val'),
+    pathomitInput:  document.getElementById('trace-pathomit'),
+    pathomitVal:    document.getElementById('trace-pathomit-val'),
+    qtresInput:     document.getElementById('trace-qtres'),
+    qtresVal:       document.getElementById('trace-qtres-val'),
+    invertInput:    document.getElementById('trace-invert'),
+    acceptBtn:      document.getElementById('trace-accept'),
+    cancelBtn:      document.getElementById('trace-cancel'),
+    closeBtn:       document.getElementById('trace-modal-close'),
+    backdrop:       modal.querySelector('.modal-backdrop'),
+  };
+
+  state.threshInput.addEventListener('input', () => {
+    state.threshold = parseInt(state.threshInput.value, 10) || 0;
+    state.threshVal.textContent = state.threshold;
+    scheduleTraceRefresh(120);
+  });
+  state.pathomitInput.addEventListener('input', () => {
+    state.pathomit = parseInt(state.pathomitInput.value, 10) || 0;
+    state.pathomitVal.textContent = state.pathomit;
+    scheduleTraceRefresh(120);
+  });
+  state.qtresInput.addEventListener('input', () => {
+    state.qtres = parseFloat(state.qtresInput.value);
+    state.qtresVal.textContent = state.qtres.toFixed(2);
+    scheduleTraceRefresh(120);
+  });
+  state.invertInput.addEventListener('change', () => {
+    state.invert = state.invertInput.checked;
+    scheduleTraceRefresh(0);
+  });
+
+  const close = () => modal.classList.add('hidden');
+  state.cancelBtn.addEventListener('click', close);
+  state.closeBtn.addEventListener('click', close);
+  state.backdrop.addEventListener('click', close);
+
+  state.acceptBtn.addEventListener('click', () => {
+    if (!state.lastSvg || !state.file) return;
+    try {
+      const source = buildSourceFromSvg(state.lastSvg, stripExt(state.file.name), {
+        tracedFrom: (state.file.type || '').split('/')[1] || 'image',
+        originalFilename: state.file.name,
+        threshold: state.threshold,
+        invert: state.invert,
+        pathomit: state.pathomit,
+        qtres: state.qtres,
+      });
+      close();
+      setActiveGraphicSource(source, bitmapDropzone, state.file.name);
+    } catch (err) {
+      console.error(err);
+      alert('Could not build vector source from trace: ' + err.message);
+    }
+  });
+
+  // Rebind the module-scope scheduler so all subsequent control changes
+  // share this exact state object via closure.
+  scheduleTraceRefresh = function (delay) {
+    if (state.debounceTimer) clearTimeout(state.debounceTimer);
+    state.debounceTimer = setTimeout(() => runTraceRefresh(state), delay);
+  };
+
+  return state;
+}
+
+// Module-scope refresh scheduler. Initialised to a no-op so that the first
+// call from openTraceModal (which fires before initTraceModal returns when
+// it's the first invocation) doesn't throw. initTraceModal reassigns this
+// to the real scheduler closed over the live state object.
+let scheduleTraceRefresh = () => {};
+
+async function runTraceRefresh(state) {
+  if (state.busy || !state.file) return;
+  state.busy = true;
+  state.acceptBtn.disabled = true;
+  state.resultBox.innerHTML = '<span class="trace-empty">Tracing…</span>';
+
+  try {
+    // Stage 1 — binarize. Shown as the "Binarized" preview.
+    const { dataUrl } = await binarizeImage(state.file, state.threshold, state.invert);
+    state.origBox.innerHTML = `<img alt="binarized preview" src="${dataUrl}">`;
+
+    // Stage 2 — trace.
+    const svg = await traceImage(dataUrl, {
+      pathomit: state.pathomit,
+      qtres:    state.qtres,
+      // blurradius=0 — we already binarized so no need to blur.
+      blurradius: 0,
+    });
+    state.lastSvg = svg;
+
+    // Show the ink-only version (white paper layer stripped) in the
+    // preview so the user sees the actual shape that will be extruded.
+    const inkOnlySvg = svg.replace(
+      /<path\b[^>]*fill\s*=\s*"rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)"[^>]*\/?>/g,
+      ''
+    );
+    const hasInk = /<path\b/.test(inkOnlySvg);
+    state.resultBox.innerHTML = hasInk
+      ? inkOnlySvg
+      : '<span class="trace-empty">No ink contours at this threshold — adjust the slider.</span>';
+    state.acceptBtn.disabled = !hasInk;
+  } catch (err) {
+    console.error(err);
+    state.resultBox.innerHTML = `<span class="trace-empty">Trace failed: ${err.message}</span>`;
+  } finally {
+    state.busy = false;
+  }
+}
+
+function readAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(new Error('Could not read file.'));
+    reader.readAsText(file);
+  });
+}
+
+function stripExt(name) {
+  return (name || 'artwork').replace(/\.[^.]+$/, '');
+}
+
 async function handleFontLoaded(arrayBuffer, filename) {
   loading.classList.remove('hidden');
   loading.querySelector('span').textContent = 'Loading font data...';
   
   setTimeout(async () => {
     try {
+      // Replace-on-drop: a new font wipes any active graphic source.
+      clearActiveGraphicSource();
       await parseFont(arrayBuffer);
-      
+
       const fontFace = new FontFace('UploadedFont', arrayBuffer, {
         weight: '100 1000',
         stretch: '1% 500%',
@@ -720,10 +1056,12 @@ function updateSelCount() {
 }
 
 function updateButtons() {
-  const disable = activeGlyphIndices.size === 0 || isGenerating;
+  const hasOutput = activeGraphicSource || activeGlyphIndices.size > 0;
+  const disable = !hasOutput || isGenerating;
   btnSTL.disabled = disable;
   btnOBJ.disabled = disable;
-  btnZIP.disabled = glyphsList.length === 0 || isGenerating;
+  // ZIP: graphic source = single STL bundle; font = batch over glyphsList.
+  btnZIP.disabled = isGenerating || (!activeGraphicSource && glyphsList.length === 0);
 }
 
 let regenDebounceTimer = null;
@@ -735,7 +1073,9 @@ function generate3D() {
 }
 
 async function perform3DGeneration() {
-  if (activeGlyphIndices.size === 0) {
+  // Three routes: (a) graphic source = one sort, (b) font with selection,
+  // (c) nothing to do.
+  if (!activeGraphicSource && activeGlyphIndices.size === 0) {
     resetMeshGroup();
     return;
   }
@@ -743,27 +1083,44 @@ async function perform3DGeneration() {
   isGenerating = true;
   updateButtons();
   loading.classList.remove('hidden');
-  loading.querySelector('span').textContent = `Building 3D sorts (${activeGlyphIndices.size} selected)...`;
+  loading.querySelector('span').textContent = activeGraphicSource
+    ? `Building 3D sort from ${activeGraphicSource.kind === 'bitmap' ? 'bitmap' : 'vector'} source…`
+    : `Building 3D sorts (${activeGlyphIndices.size} selected)...`;
 
   setTimeout(async () => {
     try {
       resetMeshGroup();
       const masterGroup = getMeshGroup();
-      
+
       const size = plateSel.value;
       let pW = null, pH = null;
       if (size === '200x200') { pW = 200; pH = 200; }
       else if (size === '90x120') { pW = 90; pH = 120; }
+
+      const mirror = mirrorCheck.checked;
+      const applyDraft = draftCheck.checked;
+      const variableSize = variableSizeCheck.checked;
+
+      // ── Graphic-source route: one sort, centred on plate (or at origin) ──
+      if (activeGraphicSource) {
+        const blockData = await buildSlugFromSource(
+          activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
+        );
+        if (blockData) {
+          const { group, w, h, minX, minY } = blockData;
+          group.position.x = -minX - w / 2;
+          group.position.y = -minY - h / 2;
+          masterGroup.add(group);
+        }
+        frameGroup(masterGroup, pW && pH, pH);
+        return;
+      }
 
       const margin = 5.0;
       const spacing = 2.0;
       let currentX = pW ? -pW / 2 + margin : 0;
       let currentY = pW ? pH / 2 - margin : 0;
       let rowMaxH = 0;
-
-      const mirror = mirrorCheck.checked;
-      const applyDraft = draftCheck.checked;
-      const variableSize = variableSizeCheck.checked;
 
       for (let idx of activeGlyphIndices) {
         const blockData = await buildBlock(
@@ -854,12 +1211,54 @@ async function handleZipExport() {
   }
 }
 
-function downloadFile(content, ext) {
+async function handleSingleGraphicZip() {
+  if (!activeGraphicSource) return;
+  if (typeof JSZip === 'undefined') {
+    alert('JSZip failed to load — ZIP export is unavailable.');
+    return;
+  }
+  isGenerating = true;
+  updateButtons();
+  loading.classList.remove('hidden');
+  loading.querySelector('span').textContent = `Packaging ${activeGraphicSource.name}.stl…`;
+
+  try {
+    const mirror = mirrorCheck.checked;
+    const applyDraft = draftCheck.checked;
+    const variableSize = variableSizeCheck.checked;
+
+    const blockData = await buildSlugFromSource(
+      activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
+    );
+    if (!blockData || !blockData.group) throw new Error('Geometry build returned nothing.');
+    blockData.group.position.set(0, 0, 0);
+    blockData.group.updateMatrixWorld(true);
+
+    const stl = exportSTLFromGroup(blockData.group);
+    const zip = new JSZip();
+    const folderName = `Letterpress_${activeGraphicSource.kind === 'bitmap' ? 'Bitmap' : 'Vector'}_${activeGraphicSource.name}`;
+    zip.folder(folderName).file(`${activeGraphicSource.name}.stl`, stl);
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${folderName}.zip`; a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(err);
+    alert('ZIP export failed: ' + err.message);
+  } finally {
+    isGenerating = false;
+    loading.classList.add('hidden');
+    updateButtons();
+  }
+}
+
+function downloadFile(content, ext, baseName = 'letterpress_sorts') {
   const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `letterpress_sorts.${ext}`;
+  a.download = `${baseName}.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
 }

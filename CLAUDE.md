@@ -42,6 +42,10 @@ Companion app (reference for variable-font outline rendering):
   `fvar` axes/instances and variable-instance glyph outlines.
 - `jszip@3.10.1` (loaded via `<script src=>` because it's a UMD bundle) for
   batch ZIP export.
+- `imagetracerjs@1.2.6` (UMD bundle, loaded globally) powers the bitmap →
+  vector pipeline. Two-colour palette is forced via tracing options; the
+  resulting SVG is post-processed to strip the white "paper" layer before
+  it is handed to the in-house SVG parser.
 
 No bundler. Everything runs as ES modules from `<script type="module">`.
 
@@ -59,10 +63,30 @@ js/
                              getActiveFont(axesValues), getGlyphsByCategory(...)
   scene.js                 — three.js scene, camera, plate, mesh group helpers
   builder.js               — *the* geometry engine: builds slug + extruded eye
-                             from a glyph index + axesValues + slugOptions
-  ui.js                    — DOM wiring, axis sliders, instance dropdown,
-                             advanced-panel state, sessionStorage persistence
+                             from a GlyphSource + slugOptions.
+                             buildSlugFromSource(source, …) is the real
+                             entry point; buildBlock(idx, category, …) is
+                             a thin font-only shim that constructs a source
+                             via the factories and delegates.
+  ui.js                    — DOM wiring, three dropzones (font / vector /
+                             bitmap), axis sliders, instance dropdown,
+                             advanced-panel state, sessionStorage persistence,
+                             activeGraphicSource state + replace-on-drop
   exporter.js              — STL/OBJ writers + batch ZIP
+
+  sources/
+    glyph-source.js        — the GlyphSource contract + factories:
+                             fromFontGlyph(activeGlyph, activeFont, axes),
+                             fromSpacingQuad(quad, activeFont),
+                             fromCommandList(commands, name, kind, meta)
+    svg-parser.js          — parseSVG(svgText, name) → vector GlyphSource.
+                             Custom path-d parser (M/L/H/V/C/S/Q/T/A/Z),
+                             CTM flattening, Y-flip, height-normalized to
+                             1000 EM units
+    bitmap-tracer.js       — traceBitmap(fileOrBlob, name) → bitmap GlyphSource.
+                             ImageTracer.js + 2-colour palette, white layer
+                             stripped, reuses svg-parser for commands
+    index.js               — barrel export
 
 AnekLatin-VariableFont_wdth,wght.ttf  — example font for testing
 _varplay-app-reference/    — copy of varplay for cross-referencing
@@ -91,9 +115,16 @@ noordzij-render-example/   — outline-rendering reference snippets
 
 ## 5. The Geometry Engine — `js/builder.js`
 
-`buildBlock(glyphIndex, category, glyphsList, axesValues,
-            mirror, applyDraft, variableSize, slugOptions)` returns
-`{ group, w, h, minX, minY, maxY }`. The function has four explicit steps:
+The real entry point is now
+`buildSlugFromSource(source, mirror, applyDraft, variableSize, slugOptions)`,
+where `source` is a `GlyphSource` (see §12). The legacy
+`buildBlock(glyphIndex, category, glyphsList, axesValues, …)` is kept as a
+thin font-only shim that constructs a source via
+`fromFontGlyph(...)` / `fromSpacingQuad(...)` and delegates — no behaviour
+change for the font path.
+
+Both entry points return `{ group, w, h, minX, minY, maxY }`. The geometry
+function has four explicit steps:
 
 **STEP 1 — Instantiate the variable glyph.** Build a samsa instance from
 `axesValues` keyed by axis tag (samsa expects `{wght: 800, wdth: 75}`, NOT
@@ -239,6 +270,20 @@ in the advanced panel.
 
 ## 10. Recent Major Work (changelog highlights)
 
+- **v9.0 (May 2026)** — Graphic-source pipelines. The builder was
+  refactored around a unified `GlyphSource` contract (`js/sources/`) so the
+  same engine accepts font glyphs, SVG vector artwork, and bitmap images.
+  Two new dropzones in the sidebar (vector + bitmap) sit under the existing
+  font dropzone with replace-on-drop semantics. SVG: custom path-d parser,
+  CTM flattening, Y-flip, height-normalized to 1000 EM units. Bitmap:
+  ImageTracer.js with a 2-colour palette and the white background filtered
+  out, then fed through the same SVG parser. Font-only panels (Instance /
+  Axes / Glyph Selection) auto-hide when a graphic source is active.
+  PDF/AI ship next in v9.1.
+- **v8.1 (May 2026)** — Internal support walls for large hollow sorts.
+  When a cavity exceeds 4 × wall thickness it is subdivided into an MxN
+  cell grid (each cell ≤ 15 mm by default, configurable) with one drain
+  hatch per row and per column.
 - **v8 (May 2026)** — Advanced Customization accordion with full slug-shape
   parametrisation; session-storage persistence; Reset Advanced Defaults
   button; Select all / Clear bulk-selection buttons.
@@ -257,6 +302,119 @@ in the advanced panel.
 - Don't restructure the `samsa-core.js` vendored library. If you must
   upgrade, drop the new ES-module build in place and re-test the
   `sGlyph.instantiate(...)` → `decompose()` → `points/endPts` path.
+
+## 12. The Graphic Sources Pipeline (v9.0)
+
+The builder used to read samsa + opentype directly. v9.0 introduces a
+unified `GlyphSource` so the same CSG engine accepts font glyphs, SVG paths,
+and bitmap-traced contours through a single contract.
+
+### The contract (`js/sources/glyph-source.js`)
+
+```js
+{
+  kind: 'font-glyph' | 'spacing-quad' | 'vector' | 'bitmap',
+  name: string,
+  unitsPerEm: number,           // 1000 for graphics; font UPM for fonts
+  metrics: { descender, ascender, capHeight, xHeight },
+  bounds: { xMin, xMax, yMin, yMax } | null,
+  contours: {
+    format: 'samsa' | 'commands',
+    points?:  [[x, y, flagByte], ...],
+    endPts?:  [...lastIdx],
+    commands?: [{type:'M'|'L'|'Q'|'C'|'Z', ...}],
+  },
+  meta: { /* optional UI / export metadata */ }
+}
+```
+
+Two contour formats are intentionally kept side-by-side:
+
+- **`samsa`** — verbatim points/endPts from the variable-font pipeline.
+  Keeping it untouched means the font path is byte-identical to v8.1.
+- **`commands`** — opentype.js-style command list (`M`/`L`/`Q`/`C`/`Z`),
+  which is what the SVG parser emits and what the bitmap tracer
+  ultimately yields (via the SVG parser).
+
+`buildSlugFromSource(source, ...)` is source-agnostic; it dispatches on
+`contours.format` inside the relief-extraction helper.
+
+### Factories
+
+- `fromFontGlyph(activeGlyph, activeFont, axesValues)` — runs the same
+  samsa instantiation that used to live in builder.js. Returns
+  `kind:'font-glyph'` with samsa-format contours when possible,
+  command-format fallback to opentype's `path.commands` otherwise.
+- `fromSpacingQuad(quad, activeFont)` — bounds-only source, no contours.
+- `fromCommandList(commands, name, kind='vector', meta)` — the entry point
+  for graphic sources; defaults `unitsPerEm = 1000` and synthesizes metrics
+  so STEP 4 of the builder collapses cleanly to `bY1 = 0, bY2 = 1000`.
+
+### SVG parser (`js/sources/svg-parser.js`)
+
+`parseSVG(svgText, name)`:
+
+1. `DOMParser` → `<svg>` document. Catch `<parsererror>` and rethrow.
+2. Walk the tree, accumulating a CTM down to each leaf shape (matrix
+   multiplication implemented manually since DOM `getCTM()` isn't
+   available off-screen). Supports `<path>`, `<polygon>`, `<polyline>`,
+   `<rect>` (sharp corners; rx/ry deferred to v9.1), `<circle>`,
+   `<ellipse>`, `<line>`.
+3. `<path>`'s `d` attribute is parsed by a custom tokenizer + state
+   machine that handles M/L/H/V/C/S/Q/T/A/Z + relatives, implicit command
+   continuation, smooth control reflection (S/T), and arc → cubic
+   conversion for A.
+4. Compose all commands into a flat stream, compute bbox, **flip Y**
+   (SVG Y-down → font Y-up), scale uniformly so artwork height = 1000 EM
+   units, translate so bbox bottom-left is (0, 0).
+5. Return a `kind:'vector'` source via `fromCommandList(...)`.
+
+### Bitmap tracer (`js/sources/bitmap-tracer.js`)
+
+`traceBitmap(fileOrBlob, name)`:
+
+1. Read file → dataURL → `ImageTracer.imageToSVG(...)` with a **forced
+   2-colour palette** (black ink + white paper). The 2-colour quantization
+   gives the cleanest letterpress-style outlines.
+2. Strip the white "paper" layer from the resulting SVG (regex on
+   `fill="rgb(255,255,255)"` paths) — without this, the bitmap's full
+   canvas would shadow the actual artwork in the relief extrusion.
+3. Hand the ink-only SVG to `parseSVG(...)`, override `kind` to `bitmap`,
+   stamp `meta.tracedFrom` with the detected image format.
+
+Tracing options are tuned in `TRACE_OPTIONS` at the top of the module —
+adjust `ltres`/`qtres` for tighter / looser fits, `blurradius` for more or
+less smoothing of anti-aliased edges.
+
+### UI routing (`js/ui.js`)
+
+- Three dropzones: `#dropzone` (font), `#vector-dropzone`,
+  `#bitmap-dropzone`. The two new ones use `.dropzone-secondary` styling.
+- `activeGraphicSource` holds the current non-font source. When set,
+  `setFontOnlyPanelsVisible(false)` toggles `.hidden` on every
+  `.font-only` panel (Instance / Axes / Glyph Selection).
+- **Replace-on-drop**: dropping a font calls `clearActiveGraphicSource()`;
+  loading a vector or bitmap clears font-side state (`glyphsList = []`,
+  `activeGlyphIndices.clear()`). One active source at a time.
+- `generate3D()` short-circuits: if `activeGraphicSource` is set, it calls
+  `buildSlugFromSource(...)` directly (one sort, centred on plate / origin)
+  instead of iterating `activeGlyphIndices`.
+- ZIP button branches to `handleSingleGraphicZip()` for graphic sources
+  (packages one STL); STL/OBJ buttons traverse the rendered group
+  unchanged.
+
+### Pitfalls / gotchas
+
+- SVG `<defs>` content is skipped during the walk — it's usually
+  `<use>`-referenced and would otherwise produce phantom shapes. If a
+  source relies on `<use>` references we'll need to resolve them in a
+  future revision.
+- ImageTracer is loaded as a UMD global (`window.ImageTracer`) via
+  `<script src=>`; if it fails to load `traceBitmap` throws a clean error.
+  Don't try to ES-import it — it doesn't ship a module build.
+- Graphic-source metrics are synthetic (`descender = 0, ascender =
+  capHeight = xHeight = 1000`). Don't add font-specific heuristics that
+  assume real cap-height < ascender.
 
 — Pedro Amado, FBAUP / i2ADS, Type Design course, MDGPE.
    Code by Gemini Pro 3.1 and Claude Code Opus 4.7.

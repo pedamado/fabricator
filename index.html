@@ -10,9 +10,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 
-  <!-- JSZip for batch export, samsa-core loaded globally -->
+  <!-- JSZip for batch export, samsa-core, ImageTracer for bitmap → vector -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="src/samsa-core.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
 
   <!-- Modern Import Map for ES Modules -->
   <script type="importmap">
@@ -33,7 +34,7 @@
         <div>
           <h3 class="ante-title">Computational Design Letterpress</h3>
           <h1>Fabricator</h1>
-          <p class="subtitle">Drop a variable TTF font to begin</p>
+          <p class="subtitle">Drop a variable TTF font, an SVG, or a bitmap to begin</p>
         </div>
         <button id="theme-toggle" class="theme-toggle" title="Toggle Theme">◐</button>
       </div>
@@ -44,23 +45,35 @@
         <small>Supports variable fonts</small>
       </div>
 
+      <div id="vector-dropzone" class="dropzone-secondary">
+        <div class="drop-icon">✎</div>
+        <span>Drop .svg vector file</span>
+        <small>.pdf / .ai support coming in v9.1 — export as SVG for now</small>
+      </div>
+
+      <div id="bitmap-dropzone" class="dropzone-secondary">
+        <div class="drop-icon">◧</div>
+        <span>Drop bitmap image (JPG / PNG / TIFF / HEIF / WebP)</span>
+        <small>Best results with <strong>max-contrast black &amp; white</strong> images (≥ 600 × 600 px)</small>
+      </div>
+
       <div id="font-info" class="hidden">
         <div class="info-tag" id="font-name-tag">No font loaded</div>
       </div>
       
       <div id="controls" class="hidden">
 
-        <div class="panel">
+        <div class="panel font-only">
           <h3>Instance</h3>
           <select id="instance-select"><option value="">Custom</option></select>
         </div>
 
-        <div class="panel" id="axes-panel">
+        <div class="panel font-only" id="axes-panel">
           <h3>Axes</h3>
           <div id="axes-controls"><i>No variable axes</i></div>
         </div>
 
-        <div class="panel">
+        <div class="panel font-only">
           <h3>Glyph Selection</h3>
           <select id="filter-select">
             <option value="all">All Drawn Glyphs</option>
@@ -243,10 +256,10 @@
 
       <div id="sidebar-footer">
         <p class="app-description">
-          This app is meant to streamline the fabrication of custom fonts designed digitally in the Type Design course of the master in Graphic Design and Editorial Projects. Meant to assist students get their designs 3D printed in the school's fablab quickly, or for those with no knowledge of 3D software. Still some hacks needed to make the letters print only the necessary material/size like the wood type. Nevertheless a working prototype to get all the fonts to the same measurements and print seamlessly in the Printmaking Workshop of FBAUP with the letterpress presses and the other letterpress material.
+          The Fabricator App helps designers — especially students of the Type Design course in FBAUP's <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master's in Graphic Design and Editorial Projects — get their typeface designs 3D-printed at the school's Digital Fabrication Lab quickly, whether on FDM, SLA, or CNC routers. It is built for those with no prior 3D-editing experience. The Fabricator's default options ensure that every glyph in a typeface lands at the same typographic measurements, so once printed the sorts can be composed, locked-up, and printed seamlessly alongside traditional metal and wood type in FBAUP's Letterpress Printmaking Workshop using its presses and the rest of the workshop's letterpress material.
         </p>
         <p class="credits">
-          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded by Gemini Pro 3.1 and Claude Code Opus 4.7. Version 8.1, May 2026. More information and code available at <a href="https://github.com/pedamado/fabricator" target="_blank">GitHub</a>.
+          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded by Gemini Pro 3.1 and Claude Code Opus 4.7. Version 9.0, May 2026. More information and code available at <a href="https://github.com/pedamado/fabricator" target="_blank">GitHub</a>.
         </p>
       </div>
     </div>
@@ -263,6 +276,60 @@
     </div>
   </div>
   
+  <!-- ─── Trace-options modal (bitmap → vector preview & confirm) ─── -->
+  <div id="trace-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="trace-modal-title">
+      <header class="modal-header">
+        <h3 id="trace-modal-title">Trace Bitmap to Vector</h3>
+        <button id="trace-modal-close" class="modal-close" aria-label="Close">×</button>
+      </header>
+
+      <p class="modal-hint">
+        High-contrast black-and-white images give the cleanest result.
+        Move the <strong>Threshold</strong> slider until the <em>Binarized</em> preview shows your artwork as solid black on white, then accept.
+      </p>
+
+      <div class="trace-previews">
+        <div class="trace-col">
+          <h4>Binarized (input to trace)</h4>
+          <div class="trace-preview-box" id="trace-orig">
+            <span class="trace-empty">No image loaded</span>
+          </div>
+        </div>
+        <div class="trace-col">
+          <h4>Traced result (will become the 3D sort)</h4>
+          <div class="trace-preview-box" id="trace-result">
+            <span class="trace-empty">Adjust controls to retrace</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="trace-controls">
+        <div class="adv-row">
+          <label>Threshold (B&amp;W cutoff) <span class="adv-val" id="trace-thresh-val">128</span></label>
+          <input type="range" id="trace-thresh" min="0" max="255" step="1" value="128">
+        </div>
+        <div class="adv-row">
+          <label>Path simplification <span class="adv-val" id="trace-pathomit-val">4</span></label>
+          <input type="range" id="trace-pathomit" min="0" max="50" step="1" value="4">
+        </div>
+        <div class="adv-row">
+          <label>Curve smoothness <span class="adv-val" id="trace-qtres-val">0.5</span></label>
+          <input type="range" id="trace-qtres" min="0" max="2" step="0.05" value="0.5">
+        </div>
+        <label class="toggle-label">
+          <input type="checkbox" id="trace-invert"> Invert (white ink on black background source)
+        </label>
+      </div>
+
+      <footer class="modal-footer">
+        <button id="trace-cancel" class="btn-secondary">Cancel</button>
+        <button id="trace-accept">Accept &amp; Build 3D</button>
+      </footer>
+    </div>
+  </div>
+
   <!-- Load modular application -->
   <script type="module" src="js/main.js"></script>
 </body>

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CSG } from 'three-csg-ts';
-import { getActiveFont, getSamsaFont } from './font-parser.js';
+import { getActiveFont } from './font-parser.js';
+import { fromFontGlyph, fromSpacingQuad } from './sources/glyph-source.js';
 
 // ─── Defaults (every value is overridable via the slugOptions object) ───
 const DEFAULTS = {
@@ -46,6 +47,10 @@ function resolveOptions(opt = {}) {
   return merged;
 }
 
+// ─── Public: legacy font-glyph entry point ─────────────────────────────────
+// Kept so existing callers (ui.js generate3D loop, exporter.exportZIP) keep
+// working. Internally this just builds a GlyphSource and delegates to
+// buildSlugFromSource — the real engine.
 export async function buildBlock(
   glyphIndex, category, glyphsList, axesValues,
   mirror, applyDraft, variableSize = true, slugOptions = {}
@@ -53,16 +58,33 @@ export async function buildBlock(
   const activeFont = getActiveFont(axesValues);
   if (!activeFont) return null;
 
+  const item = glyphsList[glyphIndex];
+  if (!item) return null;
+
+  const source = category === 'Spacing Quads'
+    ? fromSpacingQuad(item, activeFont)
+    : fromFontGlyph(item, activeFont, axesValues);
+
+  return buildSlugFromSource(source, mirror, applyDraft, variableSize, slugOptions);
+}
+
+// ─── Public: source-agnostic entry point (font / vector / bitmap) ──────────
+// Accepts any GlyphSource and emits the 3D slug + relief in a THREE.Group.
+export async function buildSlugFromSource(
+  source, mirror, applyDraft, variableSize = true, slugOptions = {}
+) {
+  if (!source) return null;
+
   const opts = resolveOptions(slugOptions);
 
-  // ─── Master geometry constants (per-call, derived from options) ───
+  // ─── Master geometry constants ──────────────────────────────────────
   const BODY_SIZE_MM = opts.bodySizeMM;
   const SLUG_HEIGHT  = opts.slugHeight;
   const RELIEF_HEIGHT = opts.reliefHeight;
 
-  const u2mm  = BODY_SIZE_MM / activeFont.unitsPerEm;
+  const u2mm  = BODY_SIZE_MM / source.unitsPerEm;
   const beardPct = opts.beardEnabled ? opts.beardPercent : 0;
-  const BEARD_UNITS = (beardPct / 100) * activeFont.unitsPerEm;
+  const BEARD_UNITS = (beardPct / 100) * source.unitsPerEm;
   const beard = BEARD_UNITS * u2mm;
 
   const slopeEnabled = applyDraft && opts.slopeEnabled && opts.slopeAngle > 0;
@@ -70,113 +92,46 @@ export async function buildBlock(
   // Bevel offset = tan(angle) × relief depth → width of the chamfer-back per side
   const slopeBevelSize = slopeEnabled ? Math.tan(slopeAngleRad) * RELIEF_HEIGHT : 0;
 
+  // ─── STEP 1 — Bounds ────────────────────────────────────────────────
+  // For graphic sources (kind ≠ font-glyph) the metrics collapse to
+  // descender=0, ascender=1000, so STEP 4 below picks bY1=0, bY2=1000
+  // naturally.
+  const gxMinUnits = source.bounds ? source.bounds.xMin : 0;
+  const gxMaxUnits = source.bounds ? source.bounds.xMax : 0;
+  const gyMinUnits = source.bounds ? source.bounds.yMin : 0;
+  const gyMaxUnits = source.bounds ? source.bounds.yMax : 0;
+
   let blockMinX, blockMaxX, blockMinY, blockMaxY;
   let bY1 = 0, bY2 = 0;
-  let activeGlyph = null;
-  // Samsa-instantiated glyph (variated). Cached here so we compute it ONCE
-  // and reuse it for both bounds calculation AND shape extraction below.
-  let instanceGlyph = null;
 
-  if (category === 'Spacing Quads') {
-    const quad = glyphsList[glyphIndex];
-    const widthUnits = activeFont.unitsPerEm * quad.fraction;
-    blockMinX = 0;
-    blockMaxX = widthUnits * u2mm;
-    bY1 = activeFont.descender;
-    bY2 = activeFont.ascender;
+  if (source.kind === 'spacing-quad') {
+    blockMinX = source.bounds.xMin * u2mm;
+    blockMaxX = source.bounds.xMax * u2mm;
+    bY1 = source.metrics.descender;
+    bY2 = source.metrics.ascender;
     blockMinY = bY1 * u2mm - beard;
     blockMaxY = bY2 * u2mm + beard;
   } else {
-    activeGlyph = glyphsList[glyphIndex];
-
-    // -------------------------------------------------------------------
-    // STEP 1 — Build the variable instance of this glyph FIRST so that
-    // every downstream size calculation uses the live geometry of
-    // the selected axis combination, not the stale opentype.js defaults.
-    // -------------------------------------------------------------------
-    const sf = getSamsaFont();
-    if (sf && Object.keys(axesValues).length > 0) {
-      try {
-        const fvs = {};
-        sf.axes().forEach(axis => {
-          const cleanTag = axis.axisTag.trim();
-          const matchingKey = Object.keys(axesValues).find(k => k.trim() === cleanTag);
-          fvs[axis.axisTag] = matchingKey ? axesValues[matchingKey] : axis.defaultValue;
-        });
-        const inst = sf.instance(fvs);
-
-        let sGlyph = sf.glyphs[activeGlyph.index];
-        if (!sGlyph && sf.loadGlyphById) sGlyph = sf.loadGlyphById(activeGlyph.index);
-
-        if (sGlyph) {
-          const ig = sGlyph.instantiate(inst);
-          instanceGlyph = ig.numberOfContours < 0 ? ig.decompose() : ig;
-        }
-      } catch (e) {
-        console.warn('Samsa glyph instantiation failed, falling back to opentype bounds:', e);
-        instanceGlyph = null;
-      }
-    }
-
-    // -------------------------------------------------------------------
-    // STEP 2 — Bounding box from the instance's on-curve and Bezier
-    // control points.
-    // -------------------------------------------------------------------
-    let gxMinUnits, gxMaxUnits, gyMinUnits, gyMaxUnits;
-    if (instanceGlyph && instanceGlyph.endPts && instanceGlyph.endPts.length > 0 && instanceGlyph.points) {
-      const lastIdx = instanceGlyph.endPts[instanceGlyph.endPts.length - 1];
-      gxMinUnits = Infinity; gxMaxUnits = -Infinity;
-      gyMinUnits = Infinity; gyMaxUnits = -Infinity;
-      for (let i = 0; i <= lastIdx; i++) {
-        const pt = instanceGlyph.points[i];
-        if (!pt) continue;
-        if (pt[0] < gxMinUnits) gxMinUnits = pt[0];
-        if (pt[0] > gxMaxUnits) gxMaxUnits = pt[0];
-        if (pt[1] < gyMinUnits) gyMinUnits = pt[1];
-        if (pt[1] > gyMaxUnits) gyMaxUnits = pt[1];
-      }
-      if (!isFinite(gxMinUnits) || !isFinite(gxMaxUnits)) {
-        gxMinUnits = activeGlyph.xMin || 0; gxMaxUnits = activeGlyph.xMax || 0;
-      }
-      if (!isFinite(gyMinUnits) || !isFinite(gyMaxUnits)) {
-        gyMinUnits = activeGlyph.yMin || 0; gyMaxUnits = activeGlyph.yMax || 0;
-      }
-    } else {
-      gxMinUnits = activeGlyph.xMin || 0;
-      gxMaxUnits = activeGlyph.xMax || 0;
-      gyMinUnits = activeGlyph.yMin || 0;
-      gyMaxUnits = activeGlyph.yMax || 0;
-    }
-
-    // -------------------------------------------------------------------
-    // STEP 3 — Apply mirror, then add the configurable beard space per side.
-    // -------------------------------------------------------------------
+    // STEP 2 — Apply mirror, then add the configurable beard space per side.
     const gMinX = mirror ? -gxMaxUnits * u2mm : gxMinUnits * u2mm;
     const gMaxX = mirror ? -gxMinUnits * u2mm : gxMaxUnits * u2mm;
     blockMinX = gMinX - beard;
     blockMaxX = gMaxX + beard;
 
-    // -------------------------------------------------------------------
-    // STEP 4 — Vertical bounds.
-    // -------------------------------------------------------------------
-    const os2 = activeFont.tables.os2;
-    const capHeight = os2 && os2.sCapHeight ? os2.sCapHeight : activeFont.ascender;
-    const xHeight = os2 && os2.sxHeight ? os2.sxHeight : activeFont.unitsPerEm / 2;
-    const gMinY = gyMinUnits;
-    const gMaxY = gyMaxUnits;
+    // STEP 3 — Vertical bounds via metric heuristic.
+    const { descender, ascender, capHeight, xHeight } = source.metrics;
+    const THRESHOLD = 0.02 * source.unitsPerEm;
 
-    const THRESHOLD = 0.02 * activeFont.unitsPerEm;
+    if (gyMinUnits < -THRESHOLD) bY1 = descender;
+    else                         bY1 = 0;
 
-    if (gMinY < -THRESHOLD) bY1 = activeFont.descender;
-    else                    bY1 = 0;
-
-    if (gMaxY > capHeight + THRESHOLD)      bY2 = activeFont.ascender;
-    else if (gMaxY > xHeight + THRESHOLD)   bY2 = capHeight;
-    else                                    bY2 = xHeight;
+    if (gyMaxUnits > capHeight + THRESHOLD)    bY2 = ascender;
+    else if (gyMaxUnits > xHeight + THRESHOLD) bY2 = capHeight;
+    else                                       bY2 = xHeight;
 
     if (!variableSize) {
-      bY1 = activeFont.descender;
-      bY2 = activeFont.ascender;
+      bY1 = descender;
+      bY2 = ascender;
     }
 
     blockMinY = bY1 * u2mm - beard;
@@ -320,50 +275,9 @@ export async function buildBlock(
   printGroup.add(finalSlug);
 
   // ─── Glyph eye / relief ─────────────────────────────────────────────
-  if (activeGlyph) {
+  if (source.contours) {
     const shapePath = new THREE.ShapePath();
-
-    if (instanceGlyph && instanceGlyph.endPts && instanceGlyph.points) {
-      const finalGlyph = instanceGlyph;
-      let startPt = 0;
-      finalGlyph.endPts.forEach(endPt => {
-        const contourLen = endPt - startPt + 1;
-        const contour = [];
-        for (let p = startPt; p <= endPt; p++) {
-          const pt = finalGlyph.points[p];
-          const nextPt = finalGlyph.points[(p - startPt + 1) % contourLen + startPt];
-          contour.push(pt);
-          if (!(pt[2] & 0x01 || nextPt[2] & 0x01)) {
-            contour.push([(pt[0] + nextPt[0]) / 2, (pt[1] + nextPt[1]) / 2, 1]);
-          }
-        }
-        if (!(contour[0][2] & 0x01)) contour.unshift(contour.pop());
-
-        for (let p = 0; p < contour.length; p++) {
-          const pt = contour[p];
-          const x = pt[0] * u2mm;
-          const y = pt[1] * u2mm;
-          if (p === 0) {
-            shapePath.moveTo(x, y);
-          } else if (pt[2] & 0x01) {
-            shapePath.lineTo(x, y);
-          } else {
-            const nextPt = contour[(p + 1) % contour.length];
-            shapePath.quadraticCurveTo(x, y, nextPt[0] * u2mm, nextPt[1] * u2mm);
-            p++;
-          }
-        }
-        startPt = endPt + 1;
-      });
-    } else {
-      const cmds = activeGlyph.path.commands;
-      cmds.forEach(cmd => {
-        if (cmd.type === 'M') shapePath.moveTo(cmd.x * u2mm, cmd.y * u2mm);
-        else if (cmd.type === 'L') shapePath.lineTo(cmd.x * u2mm, cmd.y * u2mm);
-        else if (cmd.type === 'Q') shapePath.quadraticCurveTo(cmd.x1 * u2mm, cmd.y1 * u2mm, cmd.x * u2mm, cmd.y * u2mm);
-        else if (cmd.type === 'C') shapePath.bezierCurveTo(cmd.x1 * u2mm, cmd.y1 * u2mm, cmd.x2 * u2mm, cmd.y2 * u2mm, cmd.x * u2mm, cmd.y * u2mm);
-      });
-    }
+    buildShapePath(shapePath, source.contours, u2mm);
 
     const shapes = shapePath.toShapes(false);
     if (shapes.length > 0) {
@@ -391,4 +305,52 @@ export async function buildBlock(
     w: blockWidth, h: blockHeight,
     minX: blockMinX, minY: blockMinY, maxY: blockMaxY,
   };
+}
+
+// ─── Shape extraction ──────────────────────────────────────────────────────
+// Feeds a THREE.ShapePath with the source contours. Both formats (samsa
+// points/endPts and opentype-style commands) are supported so that the
+// well-tested font path keeps using the samsa walker while the new vector
+// and bitmap pipelines emit commands.
+function buildShapePath(shapePath, contours, u2mm) {
+  if (contours.format === 'samsa') {
+    let startPt = 0;
+    contours.endPts.forEach(endPt => {
+      const contourLen = endPt - startPt + 1;
+      const contour = [];
+      for (let p = startPt; p <= endPt; p++) {
+        const pt = contours.points[p];
+        const nextPt = contours.points[(p - startPt + 1) % contourLen + startPt];
+        contour.push(pt);
+        if (!(pt[2] & 0x01 || nextPt[2] & 0x01)) {
+          contour.push([(pt[0] + nextPt[0]) / 2, (pt[1] + nextPt[1]) / 2, 1]);
+        }
+      }
+      if (!(contour[0][2] & 0x01)) contour.unshift(contour.pop());
+
+      for (let p = 0; p < contour.length; p++) {
+        const pt = contour[p];
+        const x = pt[0] * u2mm;
+        const y = pt[1] * u2mm;
+        if (p === 0) {
+          shapePath.moveTo(x, y);
+        } else if (pt[2] & 0x01) {
+          shapePath.lineTo(x, y);
+        } else {
+          const nextPt = contour[(p + 1) % contour.length];
+          shapePath.quadraticCurveTo(x, y, nextPt[0] * u2mm, nextPt[1] * u2mm);
+          p++;
+        }
+      }
+      startPt = endPt + 1;
+    });
+  } else if (contours.format === 'commands') {
+    contours.commands.forEach(cmd => {
+      if (cmd.type === 'M') shapePath.moveTo(cmd.x * u2mm, cmd.y * u2mm);
+      else if (cmd.type === 'L') shapePath.lineTo(cmd.x * u2mm, cmd.y * u2mm);
+      else if (cmd.type === 'Q') shapePath.quadraticCurveTo(cmd.x1 * u2mm, cmd.y1 * u2mm, cmd.x * u2mm, cmd.y * u2mm);
+      else if (cmd.type === 'C') shapePath.bezierCurveTo(cmd.x1 * u2mm, cmd.y1 * u2mm, cmd.x2 * u2mm, cmd.y2 * u2mm, cmd.x * u2mm, cmd.y * u2mm);
+      // 'Z' is implicit in THREE.ShapePath via subsequent moveTo
+    });
+  }
 }
