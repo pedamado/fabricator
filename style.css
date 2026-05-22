@@ -513,6 +513,14 @@ button:active { transform: translateY(0); }
 }
 
 /* Disabled state for sub-controls when parent toggle is off */
+.adv-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin: 6px 0 10px;
+  line-height: 1.4;
+}
+.adv-hint strong { color: var(--text); font-weight: 600; }
+
 .adv-section.disabled .adv-row,
 .adv-section.disabled > select {
   opacity: 0.45;
@@ -521,6 +529,48 @@ button:active { transform: translateY(0); }
 
 /* ─── Utilities ─── */
 .hidden { display: none !important; }
+
+/* ─── Viewport overlay toolbar ─── */
+#view-toolbar {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  gap: 6px;
+  z-index: 30;
+  pointer-events: none;
+}
+#view-toolbar .view-toggle {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font: 500 0.72rem/1 var(--font);
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: rgba(22, 22, 30, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  user-select: none;
+  transition: background .15s, border-color .15s, color .15s;
+}
+:root[data-theme="light"] #view-toolbar .view-toggle {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text);
+}
+#view-toolbar .view-toggle:hover {
+  border-color: var(--accent);
+}
+#view-toolbar .view-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+#view-toolbar .view-icon { font-size: 0.9rem; line-height: 1; }
+#view-toolbar .view-label { font-size: 0.7rem; text-transform: uppercase; }
 
 /* ─── Trace-options modal ─── */
 .modal {

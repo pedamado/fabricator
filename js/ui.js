@@ -1,10 +1,11 @@
 import { parseFont, getAxes, getInstances, getGlyphsByCategory, getFont } from './font-parser.js';
 import { buildBlock, buildSlugFromSource } from './builder.js';
+import { buildEmbossingPair, buildEmbossingBlock } from './embossing.js';
 import {
   parseSVG, traceBitmap,
   binarizeImage, traceImage, buildSourceFromSvg,
 } from './sources/index.js';
-import { updatePlate, resetMeshGroup, getMeshGroup, frameGroup, updateBackground } from './scene.js';
+import { updatePlate, resetMeshGroup, getMeshGroup, frameGroup, updateBackground, setLightMode, setXrayMode, getViewState } from './scene.js';
 import { exportSTLFromGroup, exportOBJFromGroup, exportZIP } from './exporter.js';
 
 let activeCategory = 'all';
@@ -19,7 +20,7 @@ let isGenerating = false;
 let activeGraphicSource = null;
 
 // ─── Slug customization options (persisted across the session) ────────────
-const SLUG_OPTIONS_KEY = 'fabricator.slugOptions.v8.1';
+const SLUG_OPTIONS_KEY = 'fabricator.slugOptions.v9.1.2';
 const DIDOT_PT_TO_MM = 0.376065;
 
 const DEFAULT_SLUG_OPTIONS = {
@@ -44,9 +45,29 @@ const DEFAULT_SLUG_OPTIONS = {
   beardPercent: 2.0,
   slopeEnabled: true,
   slopeAngle: 12,
+
+  // v9.1 — Embossing & Debossing pair options. When `embossing.enabled` is
+  // true, the regular single-matrix output is replaced by a matrix +
+  // counter pair built by js/embossing.js.
+  embossing: {
+    enabled: false,
+    mode: 'deboss',          // 'deboss' | 'emboss'
+    handEmbosser: false,
+    paperTolerance: 0.10,    // mm
+    slopeAngle: 12,
+    matrixReliefHeight: 0.6, // 0.3–2.0 mm; 0.6 mm = book-stock default
+    counterBaseHeight: 1.0,
+    counterReliefHeight: 0.6,
+    plateShape: 'glyph',     // 'glyph' | 'rect' | 'round'
+    plateWidth: 40,
+    plateHeight: 40,
+    lockAspect: true,
+    glyphScale: 1.0,
+    grayscaleLevels: 0,
+  },
 };
 
-let slugOptions = { ...DEFAULT_SLUG_OPTIONS };
+let slugOptions = { ...DEFAULT_SLUG_OPTIONS, embossing: { ...DEFAULT_SLUG_OPTIONS.embossing } };
 
 function loadSlugOptions() {
   try {
@@ -54,7 +75,16 @@ function loadSlugOptions() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
-      slugOptions = { ...DEFAULT_SLUG_OPTIONS, ...parsed };
+      slugOptions = {
+        ...DEFAULT_SLUG_OPTIONS,
+        ...parsed,
+        // Deep-merge the nested embossing block so a stored partial
+        // object doesn't drop fields we added in a later version.
+        embossing: {
+          ...DEFAULT_SLUG_OPTIONS.embossing,
+          ...(parsed.embossing || {}),
+        },
+      };
     }
   } catch (e) {
     console.warn('Could not restore slugOptions from sessionStorage:', e);
@@ -275,7 +305,222 @@ export function initUI() {
   }
 
   initAdvancedPanel();
+  initEmbossingPanel();
+  initViewToolbar();
   updateButtons();
+}
+
+// ─── Viewport overlay: bright lighting + X-ray toggles (v9.1.4) ───────────
+function initViewToolbar() {
+  const btnBright = document.getElementById('btn-bright');
+  const btnXray   = document.getElementById('btn-xray');
+  if (!btnBright || !btnXray) return;
+
+  // Restore last state from sessionStorage
+  let bright = false, xray = false;
+  try {
+    bright = sessionStorage.getItem('fabricator.viewBright') === '1';
+    xray   = sessionStorage.getItem('fabricator.viewXray')   === '1';
+  } catch (e) {}
+  setLightMode(bright ? 'bright' : 'normal');
+  setXrayMode(xray);
+  btnBright.classList.toggle('active', bright);
+  btnXray.classList.toggle('active',   xray);
+
+  btnBright.addEventListener('click', () => {
+    const cur = getViewState();
+    const next = !cur.brightMode;
+    setLightMode(next ? 'bright' : 'normal');
+    btnBright.classList.toggle('active', next);
+    try { sessionStorage.setItem('fabricator.viewBright', next ? '1' : '0'); } catch (e) {}
+  });
+  btnXray.addEventListener('click', () => {
+    const cur = getViewState();
+    const next = !cur.xrayMode;
+    setXrayMode(next);
+    btnXray.classList.toggle('active', next);
+    try { sessionStorage.setItem('fabricator.viewXray', next ? '1' : '0'); } catch (e) {}
+  });
+}
+
+// ─── Embossing & Debossing accordion (v9.1) ────────────────────────────────
+function initEmbossingPanel() {
+  const panel = document.getElementById('embossing-panel');
+  if (!panel) return;
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    enabled:        $('emb-enabled'),
+    modeDeboss:     $('emb-mode-deboss'),
+    modeEmboss:     $('emb-mode-emboss'),
+    hand:           $('emb-hand'),
+    tol:            $('emb-tol'),
+    tolVal:         $('emb-tol-val'),
+    slope:          $('emb-slope'),
+    slopeVal:       $('emb-slope-val'),
+    matRelief:      $('emb-mat-relief'),
+    matReliefVal:   $('emb-mat-relief-val'),
+    cntBase:        $('emb-cnt-base'),
+    cntBaseVal:     $('emb-cnt-base-val'),
+    cntRelief:      $('emb-cnt-relief'),
+    cntReliefVal:   $('emb-cnt-relief-val'),
+    plateShape:     $('emb-plate-shape'),
+    plateW:         $('emb-plate-w'),
+    plateWVal:      $('emb-plate-w-val'),
+    plateH:         $('emb-plate-h'),
+    plateHVal:      $('emb-plate-h-val'),
+    lockAspect:     $('emb-lock-aspect'),
+    scale:          $('emb-scale'),
+    scaleVal:       $('emb-scale-val'),
+    grayLevels:     $('emb-gray-levels'),
+    reset:          $('emb-reset'),
+  };
+  if (!el.enabled) return;
+
+  // ── Push state → inputs ─────────────────────────────────────────────
+  function pushState() {
+    const e = slugOptions.embossing;
+    el.enabled.checked = e.enabled;
+    el.modeDeboss.checked = e.mode === 'deboss';
+    el.modeEmboss.checked = e.mode === 'emboss';
+    el.hand.checked = e.handEmbosser;
+    el.tol.value = e.paperTolerance;
+    el.tolVal.textContent = `${e.paperTolerance.toFixed(3)}mm`;
+    el.slope.value = e.slopeAngle;
+    el.slopeVal.textContent = `${e.slopeAngle}°`;
+    el.matRelief.value = e.matrixReliefHeight;
+    el.matReliefVal.textContent = `${e.matrixReliefHeight.toFixed(2)}mm`;
+    el.cntBase.value = e.counterBaseHeight;
+    el.cntBaseVal.textContent = `${e.counterBaseHeight.toFixed(2)}mm`;
+    el.cntRelief.value = e.counterReliefHeight;
+    el.cntReliefVal.textContent = `${e.counterReliefHeight.toFixed(2)}mm`;
+    el.plateShape.value = e.plateShape;
+    el.plateW.value = e.plateWidth;
+    el.plateWVal.textContent = `${e.plateWidth.toFixed(1)}mm`;
+    el.plateH.value = e.plateHeight;
+    el.plateHVal.textContent = `${e.plateHeight.toFixed(1)}mm`;
+    el.lockAspect.checked = e.lockAspect;
+    el.scale.value = e.glyphScale;
+    el.scaleVal.textContent = `${e.glyphScale.toFixed(2)}×`;
+    el.grayLevels.value = String(e.grayscaleLevels || 0);
+    syncDisabledStates();
+  }
+
+  function syncDisabledStates() {
+    const enabled = slugOptions.embossing.enabled;
+    panel.querySelectorAll('.adv-section').forEach(sec => {
+      sec.classList.toggle('disabled', !enabled);
+    });
+    // Plate W/H rows are only useful when shape ≠ 'glyph'
+    const plateLocked = slugOptions.embossing.plateShape === 'glyph';
+    [el.plateW, el.plateH, el.lockAspect].forEach(c => {
+      if (c) c.disabled = !enabled || plateLocked;
+    });
+  }
+
+  function commit() { persistSlugOptions(); generate3D(); }
+
+  // ── Event wiring ────────────────────────────────────────────────────
+  el.enabled.addEventListener('change', () => {
+    slugOptions.embossing.enabled = el.enabled.checked;
+    syncDisabledStates();
+    commit();
+  });
+  [el.modeDeboss, el.modeEmboss].forEach(r => r.addEventListener('change', () => {
+    slugOptions.embossing.mode = el.modeEmboss.checked ? 'emboss' : 'deboss';
+    commit();
+  }));
+  el.hand.addEventListener('change', () => {
+    slugOptions.embossing.handEmbosser = el.hand.checked;
+    commit();
+  });
+  el.tol.addEventListener('input', () => {
+    slugOptions.embossing.paperTolerance = parseFloat(el.tol.value);
+    el.tolVal.textContent = `${slugOptions.embossing.paperTolerance.toFixed(3)}mm`;
+    commit();
+  });
+  el.slope.addEventListener('input', () => {
+    slugOptions.embossing.slopeAngle = parseFloat(el.slope.value);
+    el.slopeVal.textContent = `${slugOptions.embossing.slopeAngle}°`;
+    commit();
+  });
+  el.matRelief.addEventListener('input', () => {
+    slugOptions.embossing.matrixReliefHeight = parseFloat(el.matRelief.value);
+    el.matReliefVal.textContent = `${slugOptions.embossing.matrixReliefHeight.toFixed(2)}mm`;
+    commit();
+  });
+  el.cntBase.addEventListener('input', () => {
+    slugOptions.embossing.counterBaseHeight = parseFloat(el.cntBase.value);
+    el.cntBaseVal.textContent = `${slugOptions.embossing.counterBaseHeight.toFixed(2)}mm`;
+    commit();
+  });
+  el.cntRelief.addEventListener('input', () => {
+    slugOptions.embossing.counterReliefHeight = parseFloat(el.cntRelief.value);
+    el.cntReliefVal.textContent = `${slugOptions.embossing.counterReliefHeight.toFixed(2)}mm`;
+    commit();
+  });
+  el.plateShape.addEventListener('change', () => {
+    slugOptions.embossing.plateShape = el.plateShape.value;
+    syncDisabledStates();
+    commit();
+  });
+  // Lock-aspect tie between plateWidth and plateHeight.
+  const onPlateDim = (which, otherSlider, otherStorageKey, otherValEl) => () => {
+    const v = parseFloat(which.value);
+    if (which === el.plateW) {
+      const oldW = slugOptions.embossing.plateWidth;
+      slugOptions.embossing.plateWidth = v;
+      el.plateWVal.textContent = `${v.toFixed(1)}mm`;
+      if (slugOptions.embossing.lockAspect && oldW > 0) {
+        const ratio = slugOptions.embossing.plateHeight / oldW;
+        const newH = +(v * ratio).toFixed(1);
+        slugOptions.embossing.plateHeight = newH;
+        el.plateH.value = newH;
+        el.plateHVal.textContent = `${newH.toFixed(1)}mm`;
+      }
+    } else {
+      const oldH = slugOptions.embossing.plateHeight;
+      slugOptions.embossing.plateHeight = v;
+      el.plateHVal.textContent = `${v.toFixed(1)}mm`;
+      if (slugOptions.embossing.lockAspect && oldH > 0) {
+        const ratio = slugOptions.embossing.plateWidth / oldH;
+        const newW = +(v * ratio).toFixed(1);
+        slugOptions.embossing.plateWidth = newW;
+        el.plateW.value = newW;
+        el.plateWVal.textContent = `${newW.toFixed(1)}mm`;
+      }
+    }
+    commit();
+  };
+  el.plateW.addEventListener('input', onPlateDim(el.plateW));
+  el.plateH.addEventListener('input', onPlateDim(el.plateH));
+  el.lockAspect.addEventListener('change', () => {
+    slugOptions.embossing.lockAspect = el.lockAspect.checked;
+    persistSlugOptions();
+  });
+  el.scale.addEventListener('input', () => {
+    slugOptions.embossing.glyphScale = parseFloat(el.scale.value);
+    el.scaleVal.textContent = `${slugOptions.embossing.glyphScale.toFixed(2)}×`;
+    commit();
+  });
+  el.grayLevels.addEventListener('change', () => {
+    slugOptions.embossing.grayscaleLevels = parseInt(el.grayLevels.value, 10) || 0;
+    commit();
+  });
+  el.reset.addEventListener('click', () => {
+    slugOptions.embossing = { ...DEFAULT_SLUG_OPTIONS.embossing };
+    pushState();
+    commit();
+  });
+
+  // Persist open/closed accordion state
+  try {
+    if (sessionStorage.getItem('fabricator.embossingPanelOpen') === '1') panel.open = true;
+  } catch (e) {}
+  panel.addEventListener('toggle', () => {
+    try { sessionStorage.setItem('fabricator.embossingPanelOpen', panel.open ? '1' : '0'); } catch (e) {}
+  });
+
+  pushState();
 }
 
 // ─── Advanced customization panel wiring ───────────────────────────────
@@ -1101,16 +1346,34 @@ async function perform3DGeneration() {
       const applyDraft = draftCheck.checked;
       const variableSize = variableSizeCheck.checked;
 
-      // ── Graphic-source route: one sort, centred on plate (or at origin) ──
+      const embossing = slugOptions.embossing && slugOptions.embossing.enabled;
+
+      // ── Graphic-source route: one sort (or one pair), centred ──────
       if (activeGraphicSource) {
-        const blockData = await buildSlugFromSource(
-          activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
-        );
-        if (blockData) {
-          const { group, w, h, minX, minY } = blockData;
-          group.position.x = -minX - w / 2;
-          group.position.y = -minY - h / 2;
-          masterGroup.add(group);
+        if (embossing) {
+          const pair = await buildEmbossingPair(
+            activeGraphicSource, slugOptions, slugOptions.embossing, { mirror, applyDraft }
+          );
+          if (pair) {
+            const spacing = 4;
+            const { matrix, counter, plateW } = pair;
+            matrix.group.position.x = -plateW / 2 - spacing / 2 - matrix.minX - matrix.w / 2;
+            matrix.group.position.y = -matrix.minY - matrix.h / 2;
+            counter.group.position.x =  plateW / 2 + spacing / 2 - counter.minX - counter.w / 2;
+            counter.group.position.y = -counter.minY - counter.h / 2;
+            masterGroup.add(matrix.group);
+            masterGroup.add(counter.group);
+          }
+        } else {
+          const blockData = await buildSlugFromSource(
+            activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
+          );
+          if (blockData) {
+            const { group, w, h, minX, minY } = blockData;
+            group.position.x = -minX - w / 2;
+            group.position.y = -minY - h / 2;
+            masterGroup.add(group);
+          }
         }
         frameGroup(masterGroup, pW && pH, pH);
         return;
@@ -1123,15 +1386,41 @@ async function perform3DGeneration() {
       let rowMaxH = 0;
 
       for (let idx of activeGlyphIndices) {
+        const category = activeCategory === 'spacing_quads' ? 'Spacing Quads' : activeCategory;
+
+        if (embossing) {
+          // Embossing route → pair output, lay out matrix + counter side-by-side
+          // as if the pair were one wider sort. Row-wrap considers the full pair width.
+          const pair = await buildEmbossingBlock(
+            idx, category, glyphsList, axesValues,
+            mirror, applyDraft, variableSize, slugOptions, slugOptions.embossing
+          );
+          if (!pair) continue;
+          const { matrix, counter, plateW } = pair;
+          const pairSpacing = 4;
+          const pairW = plateW * 2 + pairSpacing;
+          const pairH = Math.max(matrix.h, counter.h);
+          if (pW && (currentX + pairW > pW / 2 - margin)) {
+            currentX = -pW / 2 + margin;
+            currentY -= (rowMaxH + spacing);
+            rowMaxH = 0;
+          }
+          // Anchor the pair's bounding box top-left at (currentX, currentY)
+          const anchorY = currentY - Math.max(matrix.maxY, counter.maxY);
+          matrix.group.position.x  = currentX - matrix.minX;
+          matrix.group.position.y  = anchorY - matrix.minY;
+          counter.group.position.x = currentX - counter.minX + plateW + pairSpacing;
+          counter.group.position.y = anchorY - counter.minY;
+          masterGroup.add(matrix.group);
+          masterGroup.add(counter.group);
+          currentX += pairW + spacing;
+          rowMaxH = Math.max(rowMaxH, pairH);
+          continue;
+        }
+
         const blockData = await buildBlock(
-          idx,
-          activeCategory === 'spacing_quads' ? 'Spacing Quads' : activeCategory,
-          glyphsList,
-          axesValues,
-          mirror,
-          applyDraft,
-          variableSize,
-          slugOptions
+          idx, category, glyphsList, axesValues,
+          mirror, applyDraft, variableSize, slugOptions
         );
         if (!blockData) continue;
 
@@ -1154,6 +1443,8 @@ async function perform3DGeneration() {
       }
 
       frameGroup(masterGroup, pW && pH, pH);
+      // Re-apply the current X-ray state to the freshly built meshes.
+      if (getViewState().xrayMode) setXrayMode(true);
 
     } catch (err) {
       console.error(err);
@@ -1226,18 +1517,37 @@ async function handleSingleGraphicZip() {
     const mirror = mirrorCheck.checked;
     const applyDraft = draftCheck.checked;
     const variableSize = variableSizeCheck.checked;
+    const embossing = slugOptions.embossing && slugOptions.embossing.enabled;
 
-    const blockData = await buildSlugFromSource(
-      activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
-    );
-    if (!blockData || !blockData.group) throw new Error('Geometry build returned nothing.');
-    blockData.group.position.set(0, 0, 0);
-    blockData.group.updateMatrixWorld(true);
-
-    const stl = exportSTLFromGroup(blockData.group);
     const zip = new JSZip();
-    const folderName = `Letterpress_${activeGraphicSource.kind === 'bitmap' ? 'Bitmap' : 'Vector'}_${activeGraphicSource.name}`;
-    zip.folder(folderName).file(`${activeGraphicSource.name}.stl`, stl);
+    const baseTag = activeGraphicSource.kind === 'bitmap' ? 'Bitmap' : 'Vector';
+    let folderName;
+
+    if (embossing) {
+      const pair = await buildEmbossingPair(
+        activeGraphicSource, slugOptions, slugOptions.embossing,
+        { mirror, applyDraft }
+      );
+      if (!pair || !pair.matrix || !pair.counter) throw new Error('Embossing pair build returned nothing.');
+      folderName = `Letterpress_${baseTag}_${slugOptions.embossing.mode === 'emboss' ? 'Embossing' : 'Debossing'}_${activeGraphicSource.name}`;
+      const f = zip.folder(folderName);
+      pair.matrix.group.position.set(0, 0, 0);
+      pair.matrix.group.updateMatrixWorld(true);
+      f.file(`${activeGraphicSource.name}_matrix.stl`, exportSTLFromGroup(pair.matrix.group));
+      pair.counter.group.position.set(0, 0, 0);
+      pair.counter.group.updateMatrixWorld(true);
+      f.file(`${activeGraphicSource.name}_counter.stl`, exportSTLFromGroup(pair.counter.group));
+    } else {
+      const blockData = await buildSlugFromSource(
+        activeGraphicSource, mirror, applyDraft, variableSize, slugOptions
+      );
+      if (!blockData || !blockData.group) throw new Error('Geometry build returned nothing.');
+      blockData.group.position.set(0, 0, 0);
+      blockData.group.updateMatrixWorld(true);
+      folderName = `Letterpress_${baseTag}_${activeGraphicSource.name}`;
+      zip.folder(folderName).file(`${activeGraphicSource.name}.stl`, exportSTLFromGroup(blockData.group));
+    }
+
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

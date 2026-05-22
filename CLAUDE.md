@@ -31,21 +31,46 @@ Companion app (reference for variable-font outline rendering):
 5. **Single + batch export.** STL / OBJ for the on-screen selection; ZIP of
    per-glyph STLs for the whole set.
 
-## 2. Tech Stack & External Deps (CDN-loaded via importmap)
+## 2. Tech Stack & External Deps (all vendored under `vendor/`)
 
-- `three@0.160.0` (module build) + `three-csg-ts@3.1.11` for boolean ops.
-- `opentype.js@1.3.4` for shaping/metrics, glyph-list discovery, and the
-  *fallback* outline path. **Note:** opentype.js's gvar support for outline
-  variation is unreliable; we use samsa-core for the variated outlines.
-- `samsa-core` v2.0 alpha bundled locally at `src/samsa-core.js`, imported as
-  a real ES module from `js/font-parser.js`. It does the heavy lifting for
-  `fvar` axes/instances and variable-instance glyph outlines.
-- `jszip@3.10.1` (loaded via `<script src=>` because it's a UMD bundle) for
-  batch ZIP export.
-- `imagetracerjs@1.2.6` (UMD bundle, loaded globally) powers the bitmap →
-  vector pipeline. Two-colour palette is forced via tracing options; the
-  resulting SVG is post-processed to strip the white "paper" layer before
-  it is handed to the in-house SVG parser.
+Since v9.0.1 every third-party library is downloaded into `vendor/` and
+served from disk. The app has zero runtime dependencies on the public
+internet — drop the whole folder onto a USB stick and it still works in
+the browser at the school's fablab.
+
+- `three@0.160.0` — `vendor/three/three.module.js` (canonical ESM build) +
+  `vendor/three/addons/controls/OrbitControls.js`.
+- `three-csg-ts@3.1.11` — `vendor/three-csg-ts/three-csg-ts.module.js`
+  (jsDelivr +esm bundle; the baked-in `three@0.143.0` import was rewritten
+  at vendor time to `../three/three.module.js` so we don't end up with two
+  copies of three in the page).
+- `opentype.js@1.3.4` — `vendor/opentype.js/opentype.module.js` (+esm
+  bundle, self-contained).
+- `jszip@3.10.1` — `vendor/jszip/jszip.min.js` (UMD).
+- `imagetracerjs@1.2.6` — `vendor/imagetracerjs/imagetracer_v1.2.6.js`
+  (UMD). Two-colour palette is forced; the resulting SVG is
+  post-processed to strip the white "paper" layer before it is handed to
+  the in-house SVG parser.
+- `polygon-clipping@0.15.7` (Martinez polygon union, MIT) —
+  `vendor/polygon-clipping/polygon-clipping.module.js` (+esm bundle;
+  imports rewritten to local). Two transitive deps also vendored:
+  `splaytree@3.1.2` at `vendor/splaytree/splaytree.module.js` and
+  `robust-predicates@3.0.2` at
+  `vendor/robust-predicates/robust-predicates.module.js`. Used by
+  `js/embossing.js` to flatten overlapping sub-contours of variable-font
+  glyphs before extrusion.
+- **Inter typeface** — `vendor/inter/inter.css` + `vendor/inter/inter.woff2`.
+  Google Fonts CSS was downloaded with a modern UA so it returned woff2;
+  all five weight @font-face declarations point at the same single
+  variable-font woff2.
+- `samsa-core` v2.0 alpha — already vendored at `src/samsa-core.js`. Does
+  the heavy lifting for `fvar` axes/instances and variable-instance glyph
+  outlines.
+
+The importmap in `index.html` maps the bare specifiers `three`,
+`three/addons/`, `three-csg-ts`, and `opentype.js` to the local vendor
+files. UMD bundles still load via `<script src="vendor/...">` in the
+correct order before any module evaluates.
 
 No bundler. Everything runs as ES modules from `<script type="module">`.
 
@@ -87,6 +112,18 @@ js/
                              ImageTracer.js + 2-colour palette, white layer
                              stripped, reuses svg-parser for commands
     index.js               — barrel export
+
+vendor/                    — self-hosted third-party libs (see §2).
+  three/three.module.js           — three@0.160.0
+  three/addons/controls/OrbitControls.js
+  three-csg-ts/three-csg-ts.module.js  — +esm bundle, three import patched
+  opentype.js/opentype.module.js  — +esm bundle, self-contained
+  jszip/jszip.min.js
+  imagetracerjs/imagetracer_v1.2.6.js
+  polygon-clipping/polygon-clipping.module.js  — Martinez union (mfogel)
+  splaytree/splaytree.module.js                — transitive dep
+  robust-predicates/robust-predicates.module.js — transitive dep
+  inter/inter.css + inter.woff2
 
 AnekLatin-VariableFont_wdth,wght.ttf  — example font for testing
 _varplay-app-reference/    — copy of varplay for cross-referencing
@@ -270,6 +307,51 @@ in the advanced panel.
 
 ## 10. Recent Major Work (changelog highlights)
 
+- **v9.1.5 (May 2026)** — Vendored `polygon-clipping` (Martinez
+  union, MIT, ~75 KB ESM + two transitive deps `splaytree` and
+  `robust-predicates`). The cavity pipeline now runs a polygon-union
+  pass between `ShapePath.toShapes()` and `ExtrudeGeometry` so
+  variable-font composite glyphs with overlapping sub-contours
+  (visible "step" in the upper loop of `2`, `5`, `g`) get flattened
+  into clean disjoint shapes. Equivalent of the
+  Processing/Geomerative "remove overlap" operation. Bézier curves
+  are sampled at 64 points per closed contour — for embossing
+  relief ≤ 2 mm the polyline reads as smooth.
+- **v9.1.4 (May 2026)** — Cavity rebuilt **again** to use
+  `ShapePath.toShapes(false)` + counter islands. v9.1.2's "all subpaths
+  as plate holes" approach relied on earcut's even-odd rule and broke
+  on composite / variable-font glyphs with overlapping sub-outlines
+  (visible cavity failures on `e`, `g`, `a` at extreme weights). New
+  approach: each glyph SHAPE's outer outline becomes a plate hole; each
+  shape's counter(s) become independent solid-island meshes inside the
+  cavity. Same robustness as the raised-relief path. Plus viewport
+  controls: ☀ bright lighting and ◐ X-ray translucency toggles.
+- **v9.1.3 (May 2026)** — Counter is always X-mirrored opposite to the
+  matrix. Since the counter sits face-down on the platen, modeling it
+  with reversed X-mirror means the two halves register correctly when
+  the press closes (or when the student flips the counter for a hand
+  embosser). `buildEmbossingPair` now computes two layouts side-by-side
+  (`M` for matrix, `C = computeLayout(!mirror)` for counter) and uses
+  two sets of glyph contour paths.
+- **v9.1.2 (May 2026)** — Cavity construction switched from CSG
+  subtraction to **shape-with-holes extrusion** — see §13 for the
+  detailed mechanism. `three-csg-ts` was producing non-manifold output
+  on curved glyph cavities (foot face disappearing, walls inverted).
+  The shape-with-holes route eliminates the problem entirely; CSG now
+  only handles foot chamfers + ID-nick + baseline-nick on the matrix
+  slug. Embossing defaults retuned: 0.6 mm matrix/counter relief
+  (range 0.3–2.0 mm), with paper-weight guidance.
+- **v9.1.1 (May 2026)** — Z-mirror winding fix in
+  `makeReliefExtrudeGeometry`. The inverted-slope geometry was being
+  rendered with all faces back-facing (CSG and renderer both broke);
+  fixed by swapping triangle indices after the scale(1,1,−1).
+- **v9.1 (May 2026)** — Embossing & Debossing module. New `js/embossing.js`
+  produces matrix + counter-matrix pairs from any GlyphSource. Re-uses
+  the v9.0 source contract; no new external dependencies. New
+  "Embossing & Debossing" advanced-panel accordion; storage key bumped
+  to `fabricator.slugOptions.v9.1.2`.
+- **v9.0.1 (May 2026)** — All third-party libs vendored under `vendor/`.
+  No runtime CDN dependency; works offline.
 - **v9.0 (May 2026)** — Graphic-source pipelines. The builder was
   refactored around a unified `GlyphSource` contract (`js/sources/`) so the
   same engine accepts font glyphs, SVG vector artwork, and bitmap images.
@@ -415,6 +497,177 @@ less smoothing of anti-aliased edges.
 - Graphic-source metrics are synthetic (`descender = 0, ascender =
   capHeight = xHeight = 1000`). Don't add font-specific heuristics that
   assume real cap-height < ascender.
+
+## 13. The Embossing Pipeline (v9.1, fully rebuilt in v9.1.2 / v9.1.3)
+
+`js/embossing.js` is the second public builder. It emits **two** sorts
+per input — a matrix and a counter — that sandwich a sheet of paper to
+deform it without ink. The module is fully isolated; the regular
+printing-matrix path (`buildSlugFromSource` in `builder.js`) is unchanged
+when `slugOptions.embossing.enabled === false`.
+
+### The cavity trick (read this before touching anything)
+
+The first cut of this module used `three-csg-ts` to subtract a
+glyph-shaped solid from a plate Box. **That doesn't work** for curved
+outlines or composite glyphs — the CSG BSP-splitter accumulates
+floating-point error on hundreds of small Bézier-sampled triangles and
+the boolean result has missing faces, inverted normals, and inverted
+manifoldness. The matrix base disappears, the cavity walls render
+inside-out, the slicer rejects the STL.
+
+The fix in v9.1.2 was to **stop using CSG for the cavity** and instead
+build the cavity-bearing plate as a single `THREE.ExtrudeGeometry` of a
+`THREE.Shape` whose `.holes[]` array contains the glyph contours:
+
+```js
+const plateShape = new THREE.Shape();
+plateShape.moveTo(minX, minY).lineTo(maxX, minY)
+          .lineTo(maxX, maxY).lineTo(minX, maxY).closePath();
+
+for (const glyphPath of glyphPaths) {
+  plateShape.holes.push(glyphPath);   // each closed contour = one hole
+}
+
+const geo = new THREE.ExtrudeGeometry(plateShape, {
+  depth:          cavityDepth,
+  bevelEnabled:   slope > 0 || tolerance > 0,
+  bevelThickness: Math.min(slope, cavityDepth * 0.49),
+  bevelSize:      slope,        // ← slope flare on hole walls
+  bevelOffset:    tolerance,    // ← uniform paper tolerance
+});
+```
+
+`THREE.ExtrudeGeometry` uses earcut, which handles perimeter-with-holes
+**robustly** — that's exactly the case it was designed for. No CSG, no
+non-manifold output. The slope direction comes out right: the cavity
+opens wider at the top (where paper enters) and narrows toward the deep
+end, matching the inverted-slope spec.
+
+The plate's outer perimeter is **pre-shrunk by `paperTolerance`** before
+extrusion so that `bevelOffset` (which expands every contour uniformly,
+outer AND holes) leaves the final TOP face exactly at the user's
+specified W × H. Without that pre-shrink the plate would grow by
+`paperTolerance` on every edge.
+
+The base layer underneath (slug body for matrix, 1 mm base plate for
+counter) is a separate mesh added to the same `THREE.Group`. Touching
+coplanar faces are intentional — slicers (PrusaSlicer, Chitubox, etc.)
+treat the touching meshes as one print. No CSG union is attempted
+across the joint; we already learned that lesson in v9.1.1.
+
+CSG is now **strictly limited** to the simple, geometry-symmetric
+chamfer + foot nick + baseline nick operations on the matrix slug,
+which have been reliable since v8.
+
+### Counter is X-mirrored opposite to the matrix (v9.1.3)
+
+The counter sits face-down on the platen — its X-axis flips when
+assembled. So the modelled geometry is built **with reversed X-mirror**
+so that when the student physically flips it for use, the two halves
+register correctly. `buildEmbossingPair` computes two layouts:
+
+```js
+const M = computeLayout(mirror);    // Matrix: user's Mirror X flag
+const C = computeLayout(!mirror);   // Counter: opposite
+```
+
+And two sets of contour paths:
+```js
+const matrixGlyphPaths  = contoursToPaths(source.contours, u2mm, mirror);
+const counterGlyphPaths = contoursToPaths(source.contours, u2mm, !mirror);
+```
+
+For the raised-relief side (matrix in debossing, counter in embossing),
+the `scale.x = -1` mesh flip is gated on `mirror` for the matrix and
+`!mirror` for the counter. With the user's default of `mirror: true`
+(letterpress reading direction), the matrix appears reversed in the
+viewport and the counter appears in normal reading direction.
+
+### Geometry contract
+
+Modeling is **face-up** (slug down, relief up). Heights default to:
+
+| Half     | Body            | Relief / cavity     | Total          |
+|----------|-----------------|---------------------|----------------|
+| Matrix   | `slugHeight`    | 0.6 mm (configurable, 0.3–2.0 mm) | `slugHeight + matrixRelief` |
+| Counter  | 1 mm base       | 0.6 mm cavity / relief            | `counterBase + counterRelief` |
+
+Hand-embosser mode (`embossing.handEmbosser = true`) drops the matrix's
+slug body entirely — both halves become a 1 mm base + 0.6 mm relief,
+sized for plier-style hand tools.
+
+Mode behaviour:
+- **Debossing** (`mode: 'deboss'`): matrix has a **raised** glyph
+  (inverted slope), counter has a **recessed** cavity built via
+  shape-with-holes (the cavity outline is uniformly expanded by
+  `paperTolerance`).
+- **Embossing** (`mode: 'emboss'`): matrix has a **recessed** cavity
+  built via shape-with-holes (expanded by `paperTolerance`), counter
+  has a **raised** glyph (inverted slope so it mates with the matrix
+  cavity).
+
+### Plate shapes
+
+`embossing.plateShape ∈ {'glyph', 'rect', 'round'}`:
+- `'glyph'` — body footprint = glyph bbox + beard.
+- `'rect'` — fixed `plateWidth × plateHeight` Box.
+- `'round'` — ellipse, built as a unit cylinder scaled to
+  `(plateWidth/2, plateHeight/2, 1)`. Default 40 mm matches the
+  user's hand-embosser die. Round plates skip foot chamfer / nicks.
+
+### Layout in the viewport
+
+Each glyph contributes **two** groups to the masterGroup: matrix and
+counter, laid out side-by-side as if the pair were one wider sort.
+Row-wrap uses the pair's combined width. Each group is tagged
+`group.userData.embossingRole = 'matrix' | 'counter'` so the exporter
+can name files correctly.
+
+### Export naming
+
+- Single STL / OBJ: file contains both matrix and counter meshes
+  (separate solids — the user can split in the slicer if they prefer).
+- Batch ZIP: `<charName>_matrix.stl` + `<charName>_counter.stl` per
+  glyph; the folder name carries `_Embossing` or `_Debossing` so the
+  user doesn't lose track of mode.
+
+### Storage
+
+`slugOptions.embossing` is a nested object inside the main slug options.
+The session-storage key is `fabricator.slugOptions.v9.1.2`;
+`loadSlugOptions()` deep-merges the embossing sub-object so older partial
+data doesn't drop fields added in newer schema versions.
+
+### Pitfalls / gotchas
+
+- **Never** route a complex glyph through `three-csg-ts`. Stick with the
+  shape-with-holes recipe above. CSG remains acceptable for chamfers,
+  foot nicks, and baseline nicks because those are simple rectangular
+  Box subtractions.
+- The plate outline must be **pre-shrunk** by `paperTolerance` to
+  compensate for `bevelOffset`'s uniform contour expansion. Forgetting
+  this gives a plate that's `2 × paperTolerance` too wide on every edge.
+- `bevelThickness` must be strictly **less than `depth`** in the
+  extrusion call. If `bevelThickness ≥ depth / 2`, the top and bottom
+  bevels overlap and the geometry becomes a biconvex sliver instead of
+  a plate. We clamp via `Math.min(slope, depth * 0.49)`.
+- The Z-mirror used by `invertSlope: true` in
+  `makeReliefExtrudeGeometry` reverses triangle winding. After the
+  mirror you MUST swap two indices of every triangle (the helper does
+  this via `reverseTriangleWinding`) AND call
+  `geometry.computeVertexNormals()`. Without those, the rendered mesh
+  looks "hollow" and CSG operations on it produce inverted manifoldness.
+- Matrix and counter mirror states are **always opposite**. If the user
+  toggles Mirror X off (e.g., for a non-letterpress flat-art workflow),
+  the counter still needs to flip the opposite way.
+- Glyph composite contours with literally overlapping sub-shapes may
+  triangulate poorly via earcut. Haven't seen it on tested fonts; if it
+  shows up, vendor `polygon-clipping` (~70 KB ESM) and union the
+  contours before adding them as holes.
+- Grayscale multi-level embossing (`embossing.grayscaleLevels > 0`) is
+  the v9.1.4 follow-up; the UI control is wired but currently routes
+  through the single-level bitmap-trace path.
 
 — Pedro Amado, FBAUP / i2ADS, Type Design course, MDGPE.
    Code by Gemini Pro 3.1 and Claude Code Opus 4.7.

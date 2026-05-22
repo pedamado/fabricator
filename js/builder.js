@@ -281,13 +281,12 @@ export async function buildSlugFromSource(
 
     const shapes = shapePath.toShapes(false);
     if (shapes.length > 0) {
-      const eyeGeo = new THREE.ExtrudeGeometry(shapes, {
-        depth: slopeEnabled ? 0.001 : RELIEF_HEIGHT,
-        bevelEnabled: slopeEnabled,
-        bevelSegments: 1,
-        bevelSize: slopeBevelSize,
-        bevelThickness: slopeEnabled ? RELIEF_HEIGHT : 0,
-        bevelOffset: 0,
+      const eyeGeo = makeReliefExtrudeGeometry(shapes, {
+        reliefHeight: RELIEF_HEIGHT,
+        slopeBevelSize,
+        baseOffset: 0,
+        invertSlope: false,
+        beveled: slopeEnabled,
       });
 
       const eyeMesh = new THREE.Mesh(eyeGeo, new THREE.MeshStandardMaterial({
@@ -307,12 +306,119 @@ export async function buildSlugFromSource(
   };
 }
 
+// ─── Public: shared relief-extrusion helper ────────────────────────────────
+// One ExtrudeGeometry call to rule them all. Used by `buildSlugFromSource`
+// for the regular printing relief and by `js/embossing.js` for the matrix
+// and counter relief / cavity pieces.
+//
+//   shapes          THREE.Shape[] — the 2D contours to extrude
+//   reliefHeight    mm vertical extent of the relief
+//   slopeBevelSize  mm horizontal flare per side (from slope angle × height)
+//   baseOffset      mm uniform outward 2D offset of the base outline
+//                   (used as paper-tolerance expansion for cavities)
+//   invertSlope     false → base wide, top narrow  (normal letterpress)
+//                   true  → base exact, top wider  (embossing/debossing)
+//   beveled         false → flat extrusion of height=reliefHeight (no slope)
+//
+// Geometry contract:
+//   • Normal slope, no offset, beveled:
+//       depth = 0.001, bevelThickness = reliefHeight,
+//       bevelSize = slopeBevelSize, bevelOffset = 0
+//     → top face = shape exactly; bottom face = shape + slopeBevelSize.
+//   • Inverted slope: the same extrusion is rotated/flipped post-build so
+//     the bevel sits at the *base* end (base exact, top wider). The
+//     uniform `baseOffset` is applied via THREE's `bevelOffset` so the
+//     base outline gets pushed out by the paper tolerance.
+export function makeReliefExtrudeGeometry(shapes, {
+  reliefHeight,
+  slopeBevelSize = 0,
+  baseOffset = 0,
+  invertSlope = false,
+  beveled = true,
+} = {}) {
+  if (!beveled || slopeBevelSize <= 0) {
+    if (baseOffset > 0) {
+      // Flat extrusion with a uniform outward offset on the perimeter.
+      return new THREE.ExtrudeGeometry(shapes, {
+        depth: reliefHeight,
+        bevelEnabled: true,
+        bevelSegments: 1,
+        bevelThickness: 0.001,
+        bevelSize: 0,
+        bevelOffset: baseOffset,
+      });
+    }
+    return new THREE.ExtrudeGeometry(shapes, {
+      depth: reliefHeight,
+      bevelEnabled: false,
+    });
+  }
+
+  // Beveled extrusion. The bevel acts as the slope face.
+  // ─ Normal slope ─ THREE puts the flat shape at z=depth (top) and the
+  //   bevel-expanded shape at z=0 (bottom). Top narrow, bottom wide. ✓
+  // ─ Inverted slope ─ We want top wide, bottom exact. Trick: extrude in
+  //   the normal direction, then flip the resulting geometry on the XY
+  //   plane (negate Z, re-translate to z>=0). The bevel ends up at the
+  //   top, the flat face at the bottom.
+  const geo = new THREE.ExtrudeGeometry(shapes, {
+    depth: 0.001,
+    bevelEnabled: true,
+    bevelSegments: 1,
+    bevelThickness: reliefHeight,
+    bevelSize: slopeBevelSize,
+    bevelOffset: baseOffset,
+  });
+  if (invertSlope) {
+    // Mirror across the XY plane (Z → −Z), then re-translate back to
+    // z ∈ [0, reliefHeight]. The bevel that was at the bottom (wide)
+    // ends up at the top (wide), and the original z=depth flat face
+    // (narrow / exact) lands at the bottom.
+    geo.applyMatrix4(new THREE.Matrix4().makeScale(1, 1, -1));
+    geo.translate(0, 0, reliefHeight + 0.001);
+    // The Z-mirror reverses triangle winding order — every face now
+    // points inward, which breaks both the renderer (back-face cull) and
+    // any downstream CSG (it relies on consistent outward normals).
+    // Swap two indices of each triangle to restore outward winding.
+    reverseTriangleWinding(geo);
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+function reverseTriangleWinding(geo) {
+  const idx = geo.index;
+  if (idx) {
+    const arr = idx.array;
+    for (let i = 0; i + 2 < arr.length; i += 3) {
+      const t = arr[i + 1];
+      arr[i + 1] = arr[i + 2];
+      arr[i + 2] = t;
+    }
+    idx.needsUpdate = true;
+    return;
+  }
+  // Non-indexed: swap pairs of vertices in every position-attribute triangle.
+  const pos = geo.attributes.position;
+  if (!pos) return;
+  const arr = pos.array;
+  const stride = pos.itemSize; // typically 3
+  for (let t = 0; t + 2 < pos.count; t += 3) {
+    for (let k = 0; k < stride; k++) {
+      const a = (t + 1) * stride + k;
+      const b = (t + 2) * stride + k;
+      const tmp = arr[a]; arr[a] = arr[b]; arr[b] = tmp;
+    }
+  }
+  pos.needsUpdate = true;
+}
+
 // ─── Shape extraction ──────────────────────────────────────────────────────
 // Feeds a THREE.ShapePath with the source contours. Both formats (samsa
 // points/endPts and opentype-style commands) are supported so that the
 // well-tested font path keeps using the samsa walker while the new vector
 // and bitmap pipelines emit commands.
-function buildShapePath(shapePath, contours, u2mm) {
+export function buildShapePath(shapePath, contours, u2mm) {
   if (contours.format === 'samsa') {
     let startPt = 0;
     contours.endPts.forEach(endPt => {

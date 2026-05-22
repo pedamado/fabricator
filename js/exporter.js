@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildBlock } from './builder.js';
+import { buildEmbossingBlock } from './embossing.js';
 
 export function exportSTLFromGroup(group) {
   let stl = 'solid letterpress\n';
@@ -88,7 +89,10 @@ export async function exportZIP(glyphsList, category, axesValues, mirror, applyD
     throw new Error('JSZip is not loaded.');
   }
   const zip = new JSZip();
-  const folderName = `Letterpress_${category.replace(/\s+/g, '_')}`;
+  const embossing = slugOptions && slugOptions.embossing && slugOptions.embossing.enabled;
+  const folderName = embossing
+    ? `Letterpress_${category.replace(/\s+/g, '_')}_${slugOptions.embossing.mode === 'emboss' ? 'Embossing' : 'Debossing'}`
+    : `Letterpress_${category.replace(/\s+/g, '_')}`;
   const folder = zip.folder(folderName);
 
   for (let i = 0; i < glyphsList.length; i++) {
@@ -103,13 +107,27 @@ export async function exportZIP(glyphsList, category, axesValues, mirror, applyD
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-      const blockData = await buildBlock(i, category, glyphsList, axesValues, mirror, applyDraft, variableSize, slugOptions);
-      if (blockData && blockData.group) {
-        blockData.group.position.set(0, 0, 0);
-        blockData.group.updateMatrixWorld(true);
-        
-        const stl = exportSTLFromGroup(blockData.group);
-        folder.file(`${charName}.stl`, stl);
+      if (embossing) {
+        const pair = await buildEmbossingBlock(
+          i, category, glyphsList, axesValues,
+          mirror, applyDraft, variableSize, slugOptions, slugOptions.embossing
+        );
+        if (pair && pair.matrix && pair.counter) {
+          pair.matrix.group.position.set(0, 0, 0);
+          pair.matrix.group.updateMatrixWorld(true);
+          folder.file(`${charName}_matrix.stl`, exportSTLFromGroup(pair.matrix.group));
+          pair.counter.group.position.set(0, 0, 0);
+          pair.counter.group.updateMatrixWorld(true);
+          folder.file(`${charName}_counter.stl`, exportSTLFromGroup(pair.counter.group));
+        }
+      } else {
+        const blockData = await buildBlock(i, category, glyphsList, axesValues, mirror, applyDraft, variableSize, slugOptions);
+        if (blockData && blockData.group) {
+          blockData.group.position.set(0, 0, 0);
+          blockData.group.updateMatrixWorld(true);
+          const stl = exportSTLFromGroup(blockData.group);
+          folder.file(`${charName}.stl`, stl);
+        }
       }
     } catch (err) {
       console.warn(`Skipped ${charName} due to geometry error:`, err);

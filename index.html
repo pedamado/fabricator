@@ -5,24 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Computational Letterpress Fabricator</title>
   
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- All third-party libraries are vendored under ./vendor/ so the app
+       keeps working even if the CDN is unreachable or a package gets
+       deprecated. Versions pinned at vendor time:
+         three              0.160.0   (build + OrbitControls addon)
+         three-csg-ts       3.1.11    (+esm bundle, three import rewritten
+                                       to ../three/three.module.js)
+         opentype.js        1.3.4     (+esm bundle, self-contained)
+         jszip              3.10.1    (UMD)
+         imagetracerjs      1.2.6     (UMD)
+         Inter typeface     v20       (single woff2, 5 @font-face decls) -->
+  <link rel="stylesheet" href="vendor/inter/inter.css">
   <link rel="stylesheet" href="style.css">
 
   <!-- JSZip for batch export, samsa-core, ImageTracer for bitmap → vector -->
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="vendor/jszip/jszip.min.js"></script>
   <script src="src/samsa-core.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
+  <script src="vendor/imagetracerjs/imagetracer_v1.2.6.js"></script>
 
   <!-- Modern Import Map for ES Modules -->
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-        "three-csg-ts": "https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm",
-        "opentype.js": "https://cdn.jsdelivr.net/npm/opentype.js@1.3.4/+esm"
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/",
+        "three-csg-ts": "./vendor/three-csg-ts/three-csg-ts.module.js",
+        "opentype.js": "./vendor/opentype.js/opentype.module.js",
+        "polygon-clipping": "./vendor/polygon-clipping/polygon-clipping.module.js"
       }
     }
   </script>
@@ -246,6 +255,120 @@
           <button type="button" id="opt-reset" class="btn-secondary" style="margin-top:6px;">↺ Reset Advanced Defaults</button>
         </details>
 
+        <details class="panel advanced-panel" id="embossing-panel">
+          <summary>
+            <span class="adv-title">Embossing &amp; Debossing</span>
+            <span class="adv-chevron">▸</span>
+          </summary>
+
+          <p class="adv-hint">
+            Generates a <strong>matrix + counter-matrix</strong> pair from the
+            current source. Used for inkless relief prints on letterpress
+            presses or hand-operated embossing pliers.
+          </p>
+
+          <label class="toggle-label">
+            <input type="checkbox" id="emb-enabled"> Enable embossing pair output
+          </label>
+
+          <div class="adv-section">
+            <h4>Mode</h4>
+            <label class="toggle-label">
+              <input type="radio" name="emb-mode" id="emb-mode-deboss" value="deboss" checked>
+              Debossing (lowered into paper)
+            </label>
+            <label class="toggle-label">
+              <input type="radio" name="emb-mode" id="emb-mode-emboss" value="emboss">
+              Embossing (raised on paper)
+            </label>
+            <label class="toggle-label" style="margin-top:6px;">
+              <input type="checkbox" id="emb-hand"> Hand-embosser mode
+              <small style="display:block; color: var(--text-muted); font-weight: normal; margin-left: 22px;">(no slug — both halves on a 1 mm base for pliers/staplers)</small>
+            </label>
+          </div>
+
+          <div class="adv-section">
+            <h4>Paper tolerance</h4>
+            <div class="adv-row">
+              <label>Cavity offset <span class="adv-val" id="emb-tol-val">0.10mm</span></label>
+              <input type="range" id="emb-tol" min="0.025" max="1.00" step="0.005" value="0.10">
+            </div>
+            <small class="adv-hint">
+              0.05–0.15: 80–120 gsm · 0.15–0.30: cardstock · 0.30–0.50: cover stock · 0.50+: board/leather
+            </small>
+          </div>
+
+          <div class="adv-section">
+            <h4>Inverted slope angle</h4>
+            <div class="adv-row">
+              <label>Slope <span class="adv-val" id="emb-slope-val">12°</span></label>
+              <input type="range" id="emb-slope" min="0" max="45" step="1" value="12">
+            </div>
+          </div>
+
+          <div class="adv-section">
+            <h4>Relief depths</h4>
+            <div class="adv-row">
+              <label>Matrix relief <span class="adv-val" id="emb-mat-relief-val">0.6mm</span></label>
+              <input type="range" id="emb-mat-relief" min="0.3" max="2" step="0.05" value="0.6">
+            </div>
+            <div class="adv-row">
+              <label>Counter base <span class="adv-val" id="emb-cnt-base-val">1.0mm</span></label>
+              <input type="range" id="emb-cnt-base" min="0.4" max="2" step="0.05" value="1">
+            </div>
+            <div class="adv-row">
+              <label>Counter relief <span class="adv-val" id="emb-cnt-relief-val">0.6mm</span></label>
+              <input type="range" id="emb-cnt-relief" min="0.3" max="2" step="0.05" value="0.6">
+            </div>
+            <small class="adv-hint">
+              0.3–0.5mm: fine art papers · 0.6–1.0mm: book stock · 1.0+mm: cardstock / boards. Lower depths emboss more reliably with SLA prints.
+            </small>
+          </div>
+
+          <div class="adv-section">
+            <h4>Plate</h4>
+            <div class="adv-row">
+              <label>Shape</label>
+              <select id="emb-plate-shape">
+                <option value="glyph">Glyph bounds (auto)</option>
+                <option value="rect">Rectangle</option>
+                <option value="round">Round / ellipse</option>
+              </select>
+            </div>
+            <div class="adv-row">
+              <label>Width <span class="adv-val" id="emb-plate-w-val">40mm</span></label>
+              <input type="range" id="emb-plate-w" min="10" max="120" step="0.5" value="40">
+            </div>
+            <div class="adv-row">
+              <label>Height <span class="adv-val" id="emb-plate-h-val">40mm</span></label>
+              <input type="range" id="emb-plate-h" min="10" max="120" step="0.5" value="40">
+            </div>
+            <label class="toggle-label">
+              <input type="checkbox" id="emb-lock-aspect" checked> Lock aspect ratio
+            </label>
+            <div class="adv-row">
+              <label>Glyph scale <span class="adv-val" id="emb-scale-val">1.00×</span></label>
+              <input type="range" id="emb-scale" min="0.25" max="4" step="0.05" value="1">
+            </div>
+          </div>
+
+          <div class="adv-section">
+            <h4>Grayscale embossing (bitmap only)</h4>
+            <div class="adv-row">
+              <label>Levels</label>
+              <select id="emb-gray-levels">
+                <option value="0">Off (single level)</option>
+                <option value="2">2 levels</option>
+                <option value="4">4 levels</option>
+                <option value="8">8 levels</option>
+              </select>
+            </div>
+            <small class="adv-hint">Multi-level relief ships in v9.1.1 — toggle is wired but currently uses the single-level trace.</small>
+          </div>
+
+          <button type="button" id="emb-reset" class="btn-secondary" style="margin-top:6px;">↺ Reset Embossing Defaults</button>
+        </details>
+
         <div class="panel export-panel">
           <h3>Export</h3>
           <button id="btn-export-stl">⬇ STL (Selected Sorts)</button>
@@ -259,12 +382,22 @@
           The Fabricator App helps designers — especially students of the Type Design course in FBAUP's <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master's in Graphic Design and Editorial Projects — get their typeface designs 3D-printed at the school's Digital Fabrication Lab quickly, whether on FDM, SLA, or CNC routers. It is built for those with no prior 3D-editing experience. The Fabricator's default options ensure that every glyph in a typeface lands at the same typographic measurements, so once printed the sorts can be composed, locked-up, and printed seamlessly alongside traditional metal and wood type in FBAUP's Letterpress Printmaking Workshop using its presses and the rest of the workshop's letterpress material.
         </p>
         <p class="credits">
-          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded by Gemini Pro 3.1 and Claude Code Opus 4.7. Version 9.0, May 2026. More information and code available at <a href="https://github.com/pedamado/fabricator" target="_blank">GitHub</a>.
+          Designed by Pedro Amado, <a href="https://www.up.pt/fbaup/" target="_blank">FBAUP</a>/<a href="https://i2ads.up.pt/" target="_blank">i2ADS</a>, within the context of the Type Design course of the <a href="https://mdgpe.fba.up.pt/" target="_blank">MDGPE</a> master program at FBAUP, and the <a href="https://ligatures.fba.up.pt/" target="_blank">Ligatures SIG</a> from the i2ADS. Coded by Gemini Pro 3.1 and Claude Code Opus 4.7. Version 9.1.5, May 2026. More information and code available at <a href="https://github.com/pedamado/fabricator" target="_blank">GitHub</a>.
         </p>
       </div>
     </div>
     
     <div id="viewport">
+      <div id="view-toolbar">
+        <button type="button" id="btn-bright" class="view-toggle" title="Brighter scene lighting">
+          <span class="view-icon">☀</span>
+          <span class="view-label">Bright</span>
+        </button>
+        <button type="button" id="btn-xray" class="view-toggle" title="X-ray (translucent) view">
+          <span class="view-icon">◐</span>
+          <span class="view-label">X-ray</span>
+        </button>
+      </div>
       <div id="loading" class="hidden">
         <div class="spinner"></div>
         <span>Generating 3D model…</span>

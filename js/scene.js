@@ -5,6 +5,16 @@ let scene, camera, renderer, controls;
 let meshGroup;
 let plateMesh = null;
 
+// Lighting rigs. The default rig stays unchanged. The "bright" rig adds
+// three more directional lights from different angles + a stronger
+// ambient so shallow embossing cavities and fine glyph details are
+// easier to read in the viewport.
+let ambientLight = null;
+let defaultDirLight = null;
+const brightDirLights = [];
+let brightModeOn = false;
+let xrayModeOn = false;
+
 export function updateBackground(theme) {
   if (scene) {
     scene.background = new THREE.Color(theme === 'light' ? 0xf9fafb : 0x0d0d12);
@@ -31,10 +41,26 @@ export function initScene(viewportEl) {
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0, 10);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(50, -50, 100);
-  scene.add(dirLight);
+  ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+  defaultDirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  defaultDirLight.position.set(50, -50, 100);
+  scene.add(defaultDirLight);
+
+  // Three extra directional lights for "bright" inspection mode, parked
+  // off-scene at intensity 0 so they exist but contribute nothing until
+  // setLightMode('bright') is called.
+  const brightPositions = [
+    [-80, -60, 120],   // upper-left
+    [ 80,  60, 120],   // upper-right rear
+    [  0,  80,  60],   // top, behind
+  ];
+  for (const pos of brightPositions) {
+    const dl = new THREE.DirectionalLight(0xffffff, 0);
+    dl.position.set(pos[0], pos[1], pos[2]);
+    scene.add(dl);
+    brightDirLights.push(dl);
+  }
 
   const grid = new THREE.GridHelper(400, 40, 0x2a2a3a, 0x1e1e2a);
   grid.rotation.x = Math.PI / 2;
@@ -90,6 +116,49 @@ export function resetMeshGroup() {
       meshGroup.remove(meshGroup.children[0]);
     }
   }
+}
+
+// ─── View-mode helpers (lighting + X-ray) ─────────────────────────────────
+export function setLightMode(mode) {
+  brightModeOn = (mode === 'bright');
+  if (!ambientLight || !defaultDirLight) return;
+  if (brightModeOn) {
+    ambientLight.intensity = 1.1;
+    defaultDirLight.intensity = 0.9;
+    brightDirLights.forEach(dl => { dl.intensity = 0.45; });
+  } else {
+    ambientLight.intensity = 0.6;
+    defaultDirLight.intensity = 0.8;
+    brightDirLights.forEach(dl => { dl.intensity = 0; });
+  }
+}
+
+export function setXrayMode(enabled) {
+  xrayModeOn = !!enabled;
+  if (!meshGroup) return;
+  meshGroup.traverse(applyViewModeToMesh);
+}
+
+// Apply current X-ray state to a single mesh. Called when the user toggles
+// the X-ray button AND every time a new mesh is added to the group (via
+// scene.resetMeshGroup → ui.js generate3D path).
+export function applyViewModeToMesh(obj) {
+  if (!obj || !obj.isMesh || !obj.material) return;
+  const m = obj.material;
+  if (xrayModeOn) {
+    m.transparent = true;
+    m.opacity = 0.42;
+    m.depthWrite = false;
+  } else {
+    m.transparent = false;
+    m.opacity = 1.0;
+    m.depthWrite = true;
+  }
+  m.needsUpdate = true;
+}
+
+export function getViewState() {
+  return { brightMode: brightModeOn, xrayMode: xrayModeOn };
 }
 
 export function frameGroup(group, hasPlate, pH) {
